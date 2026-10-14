@@ -2565,8 +2565,10 @@ export class TradingTerminal {
       this.chart.setPriceScaleOptions({
         marginTop: topMarginPct,
         marginBottom: bottomMarginPct,
-      }, 'all')
-      this.chart.setAutoScale(true)
+      }, 'axes')
+      if (this.chartSettingsSaved['scales.autoScale'] !== false) {
+        this.chart.setAutoScale(true)
+      }
       this.chart.timeScale.setChangeHandler(() => {
         this.captureCurrentViewport()
       })
@@ -2919,7 +2921,6 @@ export class TradingTerminal {
       const parsed = raw ? (JSON.parse(raw) as Record<string, string | number | boolean>) : null
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         this.chartSettingsSaved = parsed
-        delete this.chartSettingsSaved['scales.autoScale']
       }
     } catch {
       /* ignore */
@@ -7366,17 +7367,26 @@ export class TradingTerminal {
       this.chart.setPriceScaleOptions({
         marginTop: topMarginPct,
         marginBottom: bottomMarginPct,
-      }, 'all')
+      }, 'axes')
 
-      // Clear any manual fixed ranges and ensure autoScale is strictly on
+      if (this.volume) {
+        this.volume.priceScale().setOptions({ marginTop: 0.82, marginBottom: 0 })
+      }
+
+      // Clear any manual fixed ranges and ensure autoScale is strictly on unless disabled
+      const autoScaleEnabled = this.chartSettingsSaved['scales.autoScale'] !== false
       this.chart.panes().forEach((pane) => {
         pane.clearRatioLocks()
         pane.scales().forEach((scale) => {
           scale.setFixedRange(null)
-          scale.setAutoScale(true)
+          if (autoScaleEnabled) {
+            scale.setAutoScale(true)
+          }
         })
       })
-      this.chart.setAutoScale(true)
+      if (autoScaleEnabled) {
+        this.chart.setAutoScale(true)
+      }
     } catch {
       /* ignore */
     } finally {

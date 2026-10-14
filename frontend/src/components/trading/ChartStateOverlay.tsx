@@ -23,21 +23,19 @@ const BUTTON =
 export function ChartStateOverlay({ view, onRetry, onDismiss }: Props) {
   if (!view || view.kind === 'ready') return null
   const copy = chartStateCopy(view)
-  const loading = view.kind === 'loading'
-  return (
-    <div
-      className="pointer-events-none absolute inset-0 z-[15] flex items-center justify-center p-3"
-      data-chart-state={view.kind}
-    >
+
+  // Loading: subtle bouncing dots in center
+  if (view.kind === 'loading') {
+    return (
       <div
-        role={copy.role}
-        aria-live={copy.role === 'alert' ? 'assertive' : 'polite'}
-        className={cn(
-          'max-w-[min(22rem,100%)] rounded-lg border border-border bg-popover/95 text-center shadow-lg backdrop-blur',
-          loading ? 'px-3 py-2' : 'pointer-events-auto px-4 py-3'
-        )}
+        className="pointer-events-none absolute inset-0 z-[15] flex items-center justify-center p-3"
+        data-chart-state="loading"
       >
-        {loading ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-lg border border-border bg-popover/90 px-3 py-2 text-center shadow-md backdrop-blur select-none"
+        >
           <div className="flex flex-col items-center gap-1.5">
             <span className="flex gap-1" aria-hidden="true">
               {[0, 1, 2].map((i) => (
@@ -50,22 +48,63 @@ export function ChartStateOverlay({ view, onRetry, onDismiss }: Props) {
             </span>
             <span className="text-[11px] text-muted-foreground">{copy.title}</span>
           </div>
-        ) : (
-          <>
-            <p className="break-words text-sm font-medium text-foreground">{copy.title}</p>
-            <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">
-              {copy.text}
-            </p>
-            <div className="mt-3 flex justify-center gap-2">
-              <button type="button" className={BUTTON} onClick={onRetry}>
-                Try again
-              </button>
-              <button type="button" className={BUTTON} onClick={onDismiss}>
-                Dismiss
-              </button>
-            </div>
-          </>
-        )}
+        </div>
+      </div>
+    )
+  }
+
+  // Empty / No Data: TradingView-style non-intrusive watermark in center.
+  // Completely pointer-events-none so it NEVER captures clicks or blocks keyboard flipping!
+  if (view.kind === 'empty') {
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 z-[15] flex items-center justify-center p-3 select-none"
+        data-chart-state="empty"
+      >
+        <div
+          role="status"
+          aria-live="polite"
+          className="max-w-[min(24rem,90%)] rounded-lg border border-border/50 bg-background/85 px-4 py-3 text-center shadow-sm backdrop-blur pointer-events-none"
+        >
+          <p className="break-words text-sm font-medium text-foreground/90">{copy.title}</p>
+          <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">
+            {copy.text}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Error: compact top-centered notification banner (non-blocking, with small retry and close)
+  return (
+    <div
+      className="pointer-events-none absolute top-3 inset-x-0 z-[15] flex justify-center px-4"
+      data-chart-state="error"
+    >
+      <div
+        role="alert"
+        aria-live="assertive"
+        className="pointer-events-auto flex items-center gap-3 rounded-lg border border-border/80 bg-popover/95 px-3 py-2 text-xs shadow-md backdrop-blur max-w-[min(28rem,90%)]"
+      >
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-foreground truncate">{copy.title}</p>
+          <p className="text-[11px] text-muted-foreground truncate">{copy.text}</p>
+        </div>
+        <button
+          type="button"
+          className={cn(BUTTON, 'shrink-0')}
+          onClick={onRetry}
+        >
+          Try again
+        </button>
+        <button
+          type="button"
+          className="shrink-0 text-muted-foreground hover:text-foreground text-xs px-1"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+        >
+          ✕
+        </button>
       </div>
     </div>
   )

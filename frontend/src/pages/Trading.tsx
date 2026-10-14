@@ -795,8 +795,13 @@ function TradingWorkspace({ account }: { account: string | null }) {
       if (!items || items.length === 0) return
 
       const target = e.target as HTMLElement | null
-      // Let space activate non-watchlist buttons
-      if (isSpace && target?.tagName === 'BUTTON' && !target.closest('[data-watchlist-row]')) {
+      // Let space activate non-watchlist and non-chart-state buttons
+      if (
+        isSpace &&
+        target?.tagName === 'BUTTON' &&
+        !target.closest('[data-watchlist-row]') &&
+        !target.closest('[data-chart-state]')
+      ) {
         return
       }
 

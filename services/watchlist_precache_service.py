@@ -86,9 +86,16 @@ def _precache_worker(items: list[dict], user_id: str | None = None):
                 _status["completed"] += 1
             continue
 
-        # Keep exact symbol. Only resolve if BSE numeric scrip code (e.g. 544809)
+        # Resolve canonical symbol and adjust exchange if needed
         symbol = raw_symbol
-        if exchange == "BSE" and raw_symbol.isdigit():
+        from database.token_db import get_symbol_info, get_token
+        sym_info = get_symbol_info(raw_symbol, exchange)
+        if sym_info:
+            symbol = sym_info.symbol
+            if exchange in ("NSE", "BSE") and sym_info.exchange in ("NSE", "BSE"):
+                if get_token(symbol, exchange) is None and sym_info.exchange != exchange:
+                    exchange = sym_info.exchange
+        elif exchange == "BSE" and raw_symbol.isdigit():
             from database.token_db import get_symbol
             resolved = get_symbol(raw_symbol, exchange)
             if resolved:

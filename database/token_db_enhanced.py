@@ -517,22 +517,37 @@ class BrokerSymbolCache:
         return found
 
     def _lookup_symbol(self, snap: _SymbolSnapshot, symbol: str, exchange: str) -> SymbolData | None:
-        """Look up symbol data with fallback for BSE numeric scrip codes and NSE series suffixes"""
+        """Look up symbol data with fallback for broker symbols, BSE numeric scrip codes, and series suffixes"""
         found = snap.by_symbol_exchange.get((symbol, exchange))
         if found is not None:
             self.stats.hits += 1
             return found
 
-        # Fallback 1: BSE 6-digit numeric security code used as symbol (e.g. '540175' -> REGENCY)
+        # Fallback 1: check broker symbol index (e.g. 'HINDZINC-EQ' passed as symbol)
+        found = snap.by_brsymbol_exchange.get((symbol, exchange))
+        if found is not None:
+            self.stats.hits += 1
+            return found
+
+        # Fallback 2: BSE numeric security code used as symbol (e.g. '540175' -> REGENCY)
         if exchange == "BSE" and symbol.isdigit():
             found = snap.by_token_exchange.get((symbol, exchange))
             if found is not None:
                 self.stats.hits += 1
                 return found
 
-        # Fallback 2: NSE series suffixes (e.g. 'GENXAI' -> 'GENXAI-SM')
+        # Fallback 3: User provided symbol with series suffix (e.g. 'HINDZINC-EQ', 'RBZJEWEL-BE', 'AGARWALTUF-SM')
+        for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-ST", "-RR", "-IV", "-BL"):
+            if symbol.endswith(suffix):
+                base_symbol = symbol[: -len(suffix)]
+                found = snap.by_symbol_exchange.get((base_symbol, exchange)) or snap.by_brsymbol_exchange.get((base_symbol, exchange))
+                if found is not None:
+                    self.stats.hits += 1
+                    return found
+
+        # Fallback 4: NSE series suffixes (e.g. 'GENXAI' -> 'GENXAI-SM')
         if exchange == "NSE":
-            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV", "-BE", "-BZ"):
                 found = snap.by_symbol_exchange.get((f"{symbol}{suffix}", exchange))
                 if found is not None:
                     self.stats.hits += 1
@@ -1019,13 +1034,25 @@ def get_token_dbquery(symbol: str, exchange: str) -> str | None:
         if sym_token:
             return sym_token.token
 
+        sym_token = SymToken.query.filter_by(brsymbol=symbol, exchange=exchange).first()
+        if sym_token:
+            return sym_token.token
+
         if exchange == "BSE" and symbol.isdigit():
             sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
             if sym_token:
                 return sym_token.token
 
+        for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-ST", "-RR", "-IV", "-BL"):
+            if symbol.endswith(suffix):
+                base_symbol = symbol[: -len(suffix)]
+                sym_token = SymToken.query.filter_by(symbol=base_symbol, exchange=exchange).first() or \
+                            SymToken.query.filter_by(brsymbol=base_symbol, exchange=exchange).first()
+                if sym_token:
+                    return sym_token.token
+
         if exchange == "NSE":
-            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV", "-BE", "-BZ"):
                 sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
                 if sym_token:
                     return sym_token.token
@@ -1060,13 +1087,25 @@ def get_br_symbol_dbquery(symbol: str, exchange: str) -> str | None:
         if sym_token:
             return sym_token.brsymbol
 
+        sym_token = SymToken.query.filter_by(brsymbol=symbol, exchange=exchange).first()
+        if sym_token:
+            return sym_token.brsymbol
+
         if exchange == "BSE" and symbol.isdigit():
             sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
             if sym_token:
                 return sym_token.brsymbol
 
+        for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-ST", "-RR", "-IV", "-BL"):
+            if symbol.endswith(suffix):
+                base_symbol = symbol[: -len(suffix)]
+                sym_token = SymToken.query.filter_by(symbol=base_symbol, exchange=exchange).first() or \
+                            SymToken.query.filter_by(brsymbol=base_symbol, exchange=exchange).first()
+                if sym_token:
+                    return sym_token.brsymbol
+
         if exchange == "NSE":
-            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV", "-BE", "-BZ"):
                 sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
                 if sym_token:
                     return sym_token.brsymbol
@@ -1106,8 +1145,16 @@ def get_brexchange_dbquery(symbol: str, exchange: str) -> str | None:
             if sym_token:
                 return sym_token.brexchange
 
+        for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-ST", "-RR", "-IV", "-BL"):
+            if symbol.endswith(suffix):
+                base_symbol = symbol[: -len(suffix)]
+                sym_token = SymToken.query.filter_by(symbol=base_symbol, exchange=exchange).first() or \
+                            SymToken.query.filter_by(brsymbol=base_symbol, exchange=exchange).first()
+                if sym_token:
+                    return sym_token.brexchange
+
         if exchange == "NSE":
-            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV", "-BE", "-BZ"):
                 sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
                 if sym_token:
                     return sym_token.brexchange
@@ -1124,10 +1171,20 @@ def get_symbol_info_dbquery(symbol: str, exchange: str) -> SymbolData | None:
         from database.symbol import SymToken
 
         sym_token = SymToken.query.filter_by(symbol=symbol, exchange=exchange).first()
+        if not sym_token:
+            sym_token = SymToken.query.filter_by(brsymbol=symbol, exchange=exchange).first()
         if not sym_token and exchange == "BSE" and symbol.isdigit():
             sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
+        if not sym_token:
+            for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-ST", "-RR", "-IV", "-BL"):
+                if symbol.endswith(suffix):
+                    base_symbol = symbol[: -len(suffix)]
+                    sym_token = SymToken.query.filter_by(symbol=base_symbol, exchange=exchange).first() or \
+                                SymToken.query.filter_by(brsymbol=base_symbol, exchange=exchange).first()
+                    if sym_token:
+                        break
         if not sym_token and exchange == "NSE":
-            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV", "-BE", "-BZ"):
                 sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
                 if sym_token:
                     break

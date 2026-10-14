@@ -74,6 +74,11 @@ def validate_symbol_exchange(symbol: str, exchange: str) -> tuple[bool, str | No
     # Validate symbol exists in master contract
     token = get_token(symbol, exchange_upper)
     if token is None:
+        # Check alternate exchange for Indian cash equities (NSE <-> BSE)
+        if exchange_upper in ("NSE", "BSE"):
+            alt = "BSE" if exchange_upper == "NSE" else "NSE"
+            if get_token(symbol, alt) is not None:
+                return True, None
         return (
             False,
             f"Symbol '{symbol}' not found for exchange '{exchange}'. Please verify the symbol name and ensure master contracts are downloaded.",
@@ -290,6 +295,15 @@ def get_history(
             400,
         )
 
+    # Resolve canonical symbol and adjust exchange if needed
+    from database.token_db import get_symbol_info
+    sym_info = get_symbol_info(symbol, exchange)
+    if sym_info:
+        symbol = sym_info.symbol
+        if exchange.upper() in ("NSE", "BSE") and sym_info.exchange in ("NSE", "BSE"):
+            if get_token(symbol, exchange.upper()) is None and sym_info.exchange != exchange.upper():
+                exchange = sym_info.exchange
+
     # Source: 'db' - Fetch from DuckDB/Historify database
     if source == "db":
         return get_history_from_db(
@@ -355,6 +369,27 @@ def get_history(
             },
             400,
         )
+
+    # Dual-exchange fallback for Indian cash equities (NSE <-> BSE) if primary returned no data
+    if (not success or not (isinstance(response_data, dict) and response_data.get("data"))) and exchange.upper() in ("NSE", "BSE"):
+        alt_exchange = "BSE" if exchange.upper() == "NSE" else "NSE"
+        if get_token(symbol, alt_exchange) is not None:
+            logger.info(f"Primary exchange {exchange} returned no data for {symbol}. Trying fallback to {alt_exchange}...")
+            if api_key and not (auth_token and broker):
+                alt_success, alt_response, alt_code = get_history_with_auth(
+                    AUTH_TOKEN, FEED_TOKEN, broker_name, symbol, alt_exchange, interval, start_date, end_date
+                )
+            elif auth_token and broker:
+                alt_success, alt_response, alt_code = get_history_with_auth(
+                    auth_token, feed_token, broker, symbol, alt_exchange, interval, start_date, end_date
+                )
+            else:
+                alt_success = False
+
+            if alt_success and isinstance(alt_response, dict) and alt_response.get("data"):
+                logger.info(f"Fallback to {alt_exchange} for {symbol} succeeded with {len(alt_response['data'])} bars")
+                success, response_data, status_code = alt_success, alt_response, alt_code
+                exchange = alt_exchange
 
     # Auto-cache broker data in DuckDB on cache miss
     if not background and success and isinstance(response_data, dict) and response_data.get("data"):
