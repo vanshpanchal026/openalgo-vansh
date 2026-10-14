@@ -77,6 +77,8 @@ interface Props {
   search(query: string, exchange?: string, limit?: number): Promise<SearchRow[]>
   /** Highlights the row matching the focused pane, as `EXCHANGE:SYMBOL`. */
   activeSymbol?: string | null
+  /** Notifies parent of the active watchlist items for keyboard navigation. */
+  onItemsChange?(items: WatchlistItem[]): void
 }
 
 interface Quote {
@@ -221,7 +223,7 @@ function rowGrid(columns: typeof COLUMNS): string {
   return `1fr ${columns.map((c) => `${c.width}px`).join(' ')} 16px`
 }
 
-export function WatchlistPanel({ apiKey, onPick, search, activeSymbol }: Props) {
+export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsChange }: Props) {
   const [lists, setLists] = useState<Watchlist[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -229,6 +231,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol }: Props) 
   const [searchOpen, setSearchOpen] = useState(false)
   const [dragId, setDragId] = useState<number | null>(null)
   const [overId, setOverId] = useState<number | null>(null)
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   /** One dialog drives create, rename and copy; `mode` says which. */
   const [nameDialog, setNameDialog] = useState<{
@@ -363,6 +366,18 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol }: Props) 
 
   /* ── live prices ──────────────────────────────────────────────────────── */
   const items = useMemo(() => active?.items ?? [], [active])
+
+  useEffect(() => {
+    onItemsChange?.(items)
+  }, [items, onItemsChange])
+
+  useEffect(() => {
+    if (!activeSymbol) return
+    const el = rowRefs.current[activeSymbol]
+    if (el) {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [activeSymbol])
 
   // A stable identity for the hook's dependency chain: `items` is a fresh array
   // on every render, and useLivePrice keys its subscription off this.
@@ -865,6 +880,11 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol }: Props) 
             return (
               <div
                 key={item.id}
+                data-watchlist-row
+                ref={(el) => {
+                  rowRefs.current[key] = el
+                  rowRefs.current[item.symbol] = el
+                }}
                 draggable
                 onDragStart={(e) => {
                   // Firefox refuses to begin a drag unless dataTransfer carries
@@ -932,6 +952,15 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol }: Props) 
                     if (e.key === 'Delete') {
                       e.preventDefault()
                       void removeSymbol(item)
+                    } else if (
+                      e.key === ' ' ||
+                      e.code === 'Space' ||
+                      e.key === 'ArrowDown' ||
+                      e.key === 'ArrowUp' ||
+                      e.key === 'PageDown' ||
+                      e.key === 'PageUp'
+                    ) {
+                      e.preventDefault()
                     }
                   }}
                   className="absolute inset-0 cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"

@@ -46,7 +46,7 @@ Base.query = db_session.query_property()
 
 #: A list is a human-curated thing, not a data dump. The cap is what keeps a
 #: runaway import from turning one poll into a thousand-symbol broker request.
-MAX_ITEMS_PER_LIST = 250
+MAX_ITEMS_PER_LIST = 500
 
 #: Enough to organise by sector, strategy and expiry several times over.
 MAX_LISTS_PER_USER = 50

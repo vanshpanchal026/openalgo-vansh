@@ -10,7 +10,13 @@ def authenticate_broker(clientcode, broker_pin, totp_code):
     """
     Authenticate with the broker and return the auth token.
     """
-    api_key = os.getenv("BROKER_API_KEY")
+    api_key = (os.getenv("BROKER_API_KEY") or "").strip()
+    if not api_key:
+        return None, None, "BROKER_API_KEY is not configured in environment"
+
+    clientcode = str(clientcode).strip() if clientcode else ""
+    broker_pin = str(broker_pin).strip() if broker_pin else ""
+    totp_code = str(totp_code).strip() if totp_code else ""
 
     try:
         # Get the shared httpx client
@@ -40,7 +46,7 @@ def authenticate_broker(clientcode, broker_pin, totp_code):
         data = response.text
         data_dict = json.loads(data)
 
-        if "data" in data_dict and "jwtToken" in data_dict["data"]:
+        if isinstance(data_dict.get("data"), dict) and "jwtToken" in data_dict["data"]:
             # Return both JWT token and feed token if available (None if not)
             auth_token = data_dict["data"]["jwtToken"]
             feed_token = data_dict["data"].get("feedToken", None)
@@ -49,3 +55,4 @@ def authenticate_broker(clientcode, broker_pin, totp_code):
             return None, None, data_dict.get("message", "Authentication failed. Please try again.")
     except Exception as e:
         return None, None, str(e)
+

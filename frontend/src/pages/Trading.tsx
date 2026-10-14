@@ -306,6 +306,8 @@ function TradingWorkspace({ account }: { account: string | null }) {
    * the panel does something sensible before any pane has been focused.
    */
   const [focusedPane, setFocusedPane] = useState('p0')
+  const focusedPaneRef = useRef(focusedPane)
+  focusedPaneRef.current = focusedPane
   /**
    * Bumped whenever what `readChartContext` would answer has changed.
    *
@@ -324,6 +326,11 @@ function TradingWorkspace({ account }: { account: string | null }) {
   const noteChartChanged = useCallback(() => setChartRevision((at) => at + 1), [])
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null)
   const [paneSymbols, setPaneSymbols] = useState<Record<string, string | null>>({})
+  const [watchlistItems, setWatchlistItems] = useState<Array<{ symbol: string; exchange: string }>>([])
+  const activeWatchlistItemsRef = useRef(watchlistItems)
+  activeWatchlistItemsRef.current = watchlistItems
+  const paneSymbolsRef = useRef(paneSymbols)
+  paneSymbolsRef.current = paneSymbols
   const [paneObjects, setPaneObjects] = useState<Record<string, ChartObjects>>({})
   const [paneAlerts, setPaneAlerts] = useState<Record<string, AlertsView>>({})
   /**
@@ -740,21 +747,91 @@ function TradingWorkspace({ account }: { account: string | null }) {
    * an open menu or the order ticket (chartMayTakeKey). Nothing on the
    * timeline is an order, so no press can place, change or cancel one.
    */
+  // Load initial watchlist symbols so keyboard navigation works immediately
+  useEffect(() => {
+    let alive = true
+    import('@/api/watchlist')
+      .then(({ watchlistApi }) => watchlistApi.list())
+      .then((loaded) => {
+        if (!alive || !loaded || loaded.length === 0) return
+        const saved = Number(localStorage.getItem('oa-trading-watchlist'))
+        const activeList = loaded.find((l) => l.id === saved) ?? loaded[0]
+        if (activeList?.items) {
+          setWatchlistItems(activeList.items)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const direction = historyChord(e)
-      if (!direction || e.repeat || workspacePending.current) return
+      if (direction) {
+        if (e.repeat || workspacePending.current) return
+        if (!chartMayTakeKey(e)) return
+        const t = activeRef.current
+        if (!t) return
+        e.preventDefault()
+        e.stopPropagation()
+        t.historyPress(direction)
+        setStats(t.drawStats())
+        return
+      }
+
+      // TradingView-style symbol flipping (Space, Shift+Space, ArrowDown, ArrowUp, PageDown, PageUp)
       if (!chartMayTakeKey(e)) return
-      const t = activeRef.current
-      if (!t) return
+      if (e.repeat || workspacePending.current) return
+      if (e.ctrlKey || e.altKey || e.metaKey) return
+
+      const isSpace = e.key === ' ' || e.code === 'Space'
+      const isDown = e.key === 'ArrowDown' || e.key === 'PageDown'
+      const isUp = e.key === 'ArrowUp' || e.key === 'PageUp'
+
+      if (!isSpace && !isDown && !isUp) return
+      const items = activeWatchlistItemsRef.current
+      if (!items || items.length === 0) return
+
+      const target = e.target as HTMLElement | null
+      // Let space activate non-watchlist buttons
+      if (isSpace && target?.tagName === 'BUTTON' && !target.closest('[data-watchlist-row]')) {
+        return
+      }
+
+      const isNext = (isSpace && !e.shiftKey) || isDown
+      const isPrev = (isSpace && e.shiftKey) || isUp
+      if (!isNext && !isPrev) return
+
       e.preventDefault()
       e.stopPropagation()
-      t.historyPress(direction)
-      setStats(t.drawStats())
+
+      const currentSym = (paneSymbolsRef.current[focusedPaneRef.current] ?? '').trim().toUpperCase()
+      const currentIndex = items.findIndex((item) => {
+        const itemSym = (item.symbol ?? '').trim().toUpperCase()
+        const itemExch = (item.exchange ?? '').trim().toUpperCase()
+        const fullKey = `${itemExch}:${itemSym}`
+        return currentSym === fullKey || currentSym === itemSym
+      })
+
+      let targetIndex = 0
+      if (currentIndex === -1) {
+        targetIndex = isNext ? 0 : items.length - 1
+      } else if (isNext) {
+        targetIndex = (currentIndex + 1) % items.length
+      } else {
+        targetIndex = (currentIndex - 1 + items.length) % items.length
+      }
+
+      const targetItem = items[targetIndex]
+      if (targetItem) {
+        sendToFocusedPane({ symbol: targetItem.symbol, exchange: targetItem.exchange })
+      }
     }
     window.addEventListener('keydown', onKey, { capture: true })
     return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [])
+  }, [sendToFocusedPane])
 
   /** The dock fills this; each chart's right-click menu reads it as it opens. */
   const orderBridge = useRef<ChartOrderBridgeRef['current']>(null)
@@ -1638,6 +1715,7 @@ function TradingWorkspace({ account }: { account: string | null }) {
                 onPick={sendToFocusedPane}
                 search={searchFromFocusedPane}
                 activeSymbol={paneSymbols[focusedPane] ?? null}
+                onItemsChange={setWatchlistItems}
               />
             </Suspense>
           )}

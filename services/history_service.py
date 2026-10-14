@@ -33,22 +33,24 @@ _history_slot_lock = real_threading.Lock()
 def _enforce_rate_limit(*, background: bool = False):
     """Wait for this request's turn (~3 per second).
 
-    Raises:
-        BrokerBusyError: Only under the gthread worker, when the turn would
-            come later than the market-data queue ceiling. The check runs
-            before the slot is booked, so a refused request delays nobody.
+    Interactive user chart requests (background=False) get priority lane access
+    so users clicking charts never get queued behind background batch downloads.
     """
     global _next_history_slot
     with _history_slot_lock:
         now = time.monotonic()
-        slot = max(now, _next_history_slot)
-        wait = slot - now
-        # Historify workers are not Gunicorn request threads.  They must share
-        # the booking queue (and therefore the broker's 3 req/s limit), but a
-        # queued background download must be allowed to wait for its turn.
         if not background:
+            # Interactive user requests get priority: bounded by broker spacing (0.35s)
+            # without waiting behind a long background queue.
+            slot = max(now, min(_next_history_slot, now + _MIN_HISTORY_INTERVAL))
+            wait = slot - now
             check_queue_wait(wait, kind="data")
-        _next_history_slot = slot + _MIN_HISTORY_INTERVAL
+            _next_history_slot = slot + _MIN_HISTORY_INTERVAL
+        else:
+            # Background precache jobs take regular sequential slots
+            slot = max(now, _next_history_slot)
+            wait = slot - now
+            _next_history_slot = slot + _MIN_HISTORY_INTERVAL
     if wait > 0:
         time.sleep(wait)
 
@@ -299,6 +301,24 @@ def get_history(
         )
 
     # Source: 'api' (default) - Fetch from broker API
+    # Cache-first check for interactive chart requests:
+    if not background:
+        db_success, db_resp, _ = get_history_from_db(
+            symbol=symbol,
+            exchange=exchange,
+            interval=interval,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if db_success and db_resp.get("data"):
+            try:
+                from database.historify_db import touch_lru
+
+                touch_lru(symbol, exchange)
+            except Exception:
+                pass
+            return True, db_resp, 200
+
     # Enforce 3 requests/second rate limit for broker history calls
     try:
         if background:
@@ -315,13 +335,13 @@ def get_history(
         )
         if AUTH_TOKEN is None:
             return False, {"status": "error", "message": "Invalid openalgo apikey"}, 403
-        return get_history_with_auth(
+        success, response_data, status_code = get_history_with_auth(
             AUTH_TOKEN, FEED_TOKEN, broker_name, symbol, exchange, interval, start_date, end_date
         )
 
     # Case 2: Direct internal call with auth_token and broker
     elif auth_token and broker:
-        return get_history_with_auth(
+        success, response_data, status_code = get_history_with_auth(
             auth_token, feed_token, broker, symbol, exchange, interval, start_date, end_date
         )
 
@@ -335,3 +355,17 @@ def get_history(
             },
             400,
         )
+
+    # Auto-cache broker data in DuckDB on cache miss
+    if not background and success and isinstance(response_data, dict) and response_data.get("data"):
+        try:
+            from database.historify_db import touch_lru, upsert_market_data
+
+            df_cache = pd.DataFrame(response_data["data"])
+            if not df_cache.empty and "timestamp" in df_cache.columns:
+                upsert_market_data(df_cache, symbol, exchange, interval)
+                touch_lru(symbol, exchange)
+        except Exception as e:
+            logger.debug(f"Auto-cache error for {symbol}:{exchange}: {e}")
+
+    return success, response_data, status_code

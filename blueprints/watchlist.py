@@ -66,7 +66,31 @@ def _name_from(payload) -> tuple[str | None, tuple | None]:
 @check_session_validity
 def lists():
     """Every list the user has, each with its instruments in display order."""
-    return jsonify({"status": "success", "data": get_watchlists(_user())})
+    data = get_watchlists(_user())
+    # Auto-trigger precache for any uncached instruments in active lists
+    if data and isinstance(data, list) and len(data) > 0:
+        first_list = data[0]
+        items = first_list.get("items")
+        if items:
+            try:
+                from services.watchlist_precache_service import trigger_watchlist_precache
+
+                trigger_watchlist_precache(items, user_id=_user())
+            except Exception as e:
+                logger.debug(f"Precache trigger check: {e}")
+    return jsonify({"status": "success", "data": data})
+
+
+@watchlist_bp.route("/watchlist/api/precache/status", methods=["GET"])
+@check_session_validity
+def precache_status():
+    """Check background precache progress."""
+    try:
+        from services.watchlist_precache_service import get_precache_status
+
+        return jsonify({"status": "success", "data": get_precache_status()})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @watchlist_bp.route("/watchlist/api/lists", methods=["POST"])
@@ -92,6 +116,16 @@ def create_list():
         # A clash is what a user actually hits, and it is the one they can act
         # on, so it is what the message describes.
         return jsonify({"status": "error", "message": f'A list named "{name}" already exists'}), 409
+
+    # Auto-trigger background pre-caching for imported items
+    if items:
+        try:
+            from services.watchlist_precache_service import trigger_watchlist_precache
+
+            trigger_watchlist_precache(items, user_id=_user())
+        except Exception as e:
+            logger.warning(f"Could not auto-trigger watchlist precache: {e}")
+
     return jsonify({"status": "success", "data": created}), 201
 
 
@@ -147,6 +181,15 @@ def add_symbol(watchlist_id: int):
                 "message": f"List not found, or it already holds {MAX_ITEMS_PER_LIST} instruments",
             }
         ), 409
+
+    # Auto-trigger precache for newly added symbol
+    try:
+        from services.watchlist_precache_service import trigger_watchlist_precache
+
+        trigger_watchlist_precache([{"symbol": symbol, "exchange": exchange}], user_id=_user())
+    except Exception as e:
+        logger.debug(f"Could not precache added symbol: {e}")
+
     return jsonify({"status": "success", "data": item}), 201
 
 

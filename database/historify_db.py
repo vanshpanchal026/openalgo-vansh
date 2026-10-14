@@ -39,6 +39,9 @@ HISTORIFY_DB_PATH = os.getenv("HISTORIFY_DATABASE_PATH", "db/historify.duckdb")
 # under eventlet so another waiting writer cannot block the lock holder's hub.
 # Native background callers enter through run_on_hub below.
 _historify_write_lock = threading.Lock()
+# Process-wide recursive lock to serialize DuckDB file access on Windows.
+# Prevents concurrent thread collisions (IO Error: Cannot open file ... used by another process)
+_historify_db_lock = threading.RLock()
 
 
 def _serialized_write(func):
@@ -96,7 +99,7 @@ def ensure_db_directory():
 
 
 @contextmanager
-def get_connection(max_retries: int = 3, retry_delay: float = 0.5):
+def get_connection(max_retries: int = 5, retry_delay: float = 0.2):
     """
     Get a DuckDB connection with proper resource management and retry logic.
 
@@ -104,8 +107,8 @@ def get_connection(max_retries: int = 3, retry_delay: float = 0.5):
     logic to handle temporary file access conflicts in concurrent scenarios.
 
     Args:
-        max_retries: Maximum number of connection attempts (default: 3)
-        retry_delay: Delay in seconds between retries (default: 0.5)
+        max_retries: Maximum number of connection attempts (default: 5)
+        retry_delay: Delay in seconds between retries (default: 0.2)
 
     Usage:
         with get_connection() as conn:
@@ -113,32 +116,36 @@ def get_connection(max_retries: int = 3, retry_delay: float = 0.5):
     """
     import time
 
-    ensure_db_directory()
-    db_path = get_db_path()
-    conn = None
-    last_error = None
+    with _historify_db_lock:
+        ensure_db_directory()
+        db_path = get_db_path()
+        conn = None
+        last_error = None
 
-    for attempt in range(max_retries):
+        for attempt in range(max_retries):
+            try:
+                import duckdb
+
+                conn = duckdb.connect(db_path)
+                break
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                else:
+                    logger.exception(f"Failed to connect to DuckDB after {max_retries} attempts: {e}")
+
+        if conn is None:
+            raise last_error or Exception("Failed to connect to DuckDB")
+
         try:
-            import duckdb
-
-            conn = duckdb.connect(db_path)
-            break
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
-                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-            else:
-                logger.exception(f"Failed to connect to DuckDB after {max_retries} attempts: {e}")
-
-    if conn is None:
-        raise last_error or Exception("Failed to connect to DuckDB")
-
-    try:
-        yield conn
-    finally:
-        conn.close()
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # Tables whose IDs come from DuckDB sequences. They predate the sequences, and
@@ -3662,3 +3669,65 @@ def get_active_schedules() -> list[dict[str, Any]]:
     except Exception as e:
         logger.exception(f"Error getting active schedules: {e}")
         return []
+
+
+@_serialized_write
+def touch_lru(symbol: str, exchange: str) -> None:
+    """Update last accessed timestamp for a symbol in LRU tracker."""
+    try:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS lru_cache_tracker (
+                    symbol VARCHAR NOT NULL,
+                    exchange VARCHAR NOT NULL,
+                    last_accessed_at TIMESTAMP DEFAULT current_timestamp,
+                    PRIMARY KEY (symbol, exchange)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO lru_cache_tracker (symbol, exchange, last_accessed_at)
+                VALUES (?, ?, now())
+                ON CONFLICT (symbol, exchange) DO UPDATE SET last_accessed_at = now()
+            """, [symbol.upper(), exchange.upper()])
+    except Exception as e:
+        logger.warning(f"Error updating LRU tracker for {symbol}:{exchange}: {e}")
+
+
+@_serialized_write
+def evict_lru_older_than(days: int = 90) -> int:
+    """Evict symbols from local cache that have not been accessed in specified days."""
+    try:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS lru_cache_tracker (
+                    symbol VARCHAR NOT NULL,
+                    exchange VARCHAR NOT NULL,
+                    last_accessed_at TIMESTAMP DEFAULT current_timestamp,
+                    PRIMARY KEY (symbol, exchange)
+                )
+            """)
+            expired = conn.execute("""
+                SELECT symbol, exchange FROM lru_cache_tracker
+                WHERE last_accessed_at < now() - INTERVAL (?) DAY
+            """, [days]).fetchall()
+
+        if not expired:
+            return 0
+
+        count = 0
+        for sym, exch in expired:
+            delete_market_data(sym, exch)
+            count += 1
+
+        with get_connection() as conn:
+            for sym, exch in expired:
+                conn.execute(
+                    "DELETE FROM lru_cache_tracker WHERE symbol = ? AND exchange = ?",
+                    [sym, exch]
+                )
+        logger.info(f"LRU Eviction: evicted {count} symbols older than {days} days")
+        return count
+    except Exception as e:
+        logger.warning(f"Error during LRU eviction: {e}")
+        return 0
+

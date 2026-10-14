@@ -516,9 +516,34 @@ class BrokerSymbolCache:
             self.stats.hits += 1
         return found
 
+    def _lookup_symbol(self, snap: _SymbolSnapshot, symbol: str, exchange: str) -> SymbolData | None:
+        """Look up symbol data with fallback for BSE numeric scrip codes and NSE series suffixes"""
+        found = snap.by_symbol_exchange.get((symbol, exchange))
+        if found is not None:
+            self.stats.hits += 1
+            return found
+
+        # Fallback 1: BSE 6-digit numeric security code used as symbol (e.g. '540175' -> REGENCY)
+        if exchange == "BSE" and symbol.isdigit():
+            found = snap.by_token_exchange.get((symbol, exchange))
+            if found is not None:
+                self.stats.hits += 1
+                return found
+
+        # Fallback 2: NSE series suffixes (e.g. 'GENXAI' -> 'GENXAI-SM')
+        if exchange == "NSE":
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+                found = snap.by_symbol_exchange.get((f"{symbol}{suffix}", exchange))
+                if found is not None:
+                    self.stats.hits += 1
+                    return found
+
+        self.stats.misses += 1
+        return None
+
     def get_token(self, symbol: str, exchange: str) -> str | None:
         """Get token for symbol and exchange - O(1) lookup"""
-        found = self._lookup(self._snap.by_symbol_exchange, (symbol, exchange))
+        found = self._lookup_symbol(self._snap, symbol, exchange)
         return found.token if found is not None else None
 
     def get_symbol(self, token: str, exchange: str) -> str | None:
@@ -528,7 +553,7 @@ class BrokerSymbolCache:
 
     def get_br_symbol(self, symbol: str, exchange: str) -> str | None:
         """Get broker symbol for symbol and exchange - O(1) lookup"""
-        found = self._lookup(self._snap.by_symbol_exchange, (symbol, exchange))
+        found = self._lookup_symbol(self._snap, symbol, exchange)
         return found.brsymbol if found is not None else None
 
     def get_oa_symbol(self, brsymbol: str, exchange: str) -> str | None:
@@ -538,12 +563,12 @@ class BrokerSymbolCache:
 
     def get_brexchange(self, symbol: str, exchange: str) -> str | None:
         """Get broker exchange for symbol and exchange - O(1) lookup"""
-        found = self._lookup(self._snap.by_symbol_exchange, (symbol, exchange))
+        found = self._lookup_symbol(self._snap, symbol, exchange)
         return found.brexchange if found is not None else None
 
     def get_symbol_info(self, symbol: str, exchange: str) -> SymbolData | None:
         """Get full symbol data for symbol and exchange - O(1) lookup"""
-        return self._lookup(self._snap.by_symbol_exchange, (symbol, exchange))
+        return self._lookup_symbol(self._snap, symbol, exchange)
 
     def get_symbol_data(self, token: str) -> SymbolData | None:
         """Get complete symbol data by token - O(1) lookup"""
@@ -893,7 +918,7 @@ def get_token(symbol: str, exchange: str) -> str | None:
 
     # Check if cache is loaded and valid
     if snap is not None:
-        found = cache._lookup(snap.by_symbol_exchange, (symbol, exchange))
+        found = cache._lookup_symbol(snap, symbol, exchange)
         if found is not None:
             return found.token
 
@@ -926,7 +951,7 @@ def get_br_symbol(symbol: str, exchange: str) -> str | None:
     snap = cache.valid_snapshot()
 
     if snap is not None:
-        found = cache._lookup(snap.by_symbol_exchange, (symbol, exchange))
+        found = cache._lookup_symbol(snap, symbol, exchange)
         if found is not None:
             return found.brsymbol
 
@@ -958,7 +983,7 @@ def get_brexchange(symbol: str, exchange: str) -> str | None:
     snap = cache.valid_snapshot()
 
     if snap is not None:
-        found = cache._lookup(snap.by_symbol_exchange, (symbol, exchange))
+        found = cache._lookup_symbol(snap, symbol, exchange)
         if found is not None:
             return found.brexchange
 
@@ -976,7 +1001,7 @@ def get_symbol_info(symbol: str, exchange: str) -> SymbolData | None:
     snap = cache.valid_snapshot()
 
     if snap is not None:
-        found = cache._lookup(snap.by_symbol_exchange, (symbol, exchange))
+        found = cache._lookup_symbol(snap, symbol, exchange)
         if found is not None:
             return found
 
@@ -993,8 +1018,19 @@ def get_token_dbquery(symbol: str, exchange: str) -> str | None:
         sym_token = SymToken.query.filter_by(symbol=symbol, exchange=exchange).first()
         if sym_token:
             return sym_token.token
-        else:
-            return None
+
+        if exchange == "BSE" and symbol.isdigit():
+            sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
+            if sym_token:
+                return sym_token.token
+
+        if exchange == "NSE":
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+                sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
+                if sym_token:
+                    return sym_token.token
+
+        return None
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
@@ -1023,8 +1059,19 @@ def get_br_symbol_dbquery(symbol: str, exchange: str) -> str | None:
         sym_token = SymToken.query.filter_by(symbol=symbol, exchange=exchange).first()
         if sym_token:
             return sym_token.brsymbol
-        else:
-            return None
+
+        if exchange == "BSE" and symbol.isdigit():
+            sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
+            if sym_token:
+                return sym_token.brsymbol
+
+        if exchange == "NSE":
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+                sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
+                if sym_token:
+                    return sym_token.brsymbol
+
+        return None
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
@@ -1053,8 +1100,19 @@ def get_brexchange_dbquery(symbol: str, exchange: str) -> str | None:
         sym_token = SymToken.query.filter_by(symbol=symbol, exchange=exchange).first()
         if sym_token:
             return sym_token.brexchange
-        else:
-            return None
+
+        if exchange == "BSE" and symbol.isdigit():
+            sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
+            if sym_token:
+                return sym_token.brexchange
+
+        if exchange == "NSE":
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+                sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
+                if sym_token:
+                    return sym_token.brexchange
+
+        return None
     except Exception as e:
         logger.exception(f"Error while querying the database: {e}")
         return None
@@ -1066,6 +1124,14 @@ def get_symbol_info_dbquery(symbol: str, exchange: str) -> SymbolData | None:
         from database.symbol import SymToken
 
         sym_token = SymToken.query.filter_by(symbol=symbol, exchange=exchange).first()
+        if not sym_token and exchange == "BSE" and symbol.isdigit():
+            sym_token = SymToken.query.filter_by(token=symbol, exchange=exchange).first()
+        if not sym_token and exchange == "NSE":
+            for suffix in ("-SM", "-ST", "-EQ", "-RR", "-IV"):
+                sym_token = SymToken.query.filter_by(symbol=f"{symbol}{suffix}", exchange=exchange).first()
+                if sym_token:
+                    break
+
         if sym_token:
             # Convert SymToken database object to SymbolData
             return SymbolData(
