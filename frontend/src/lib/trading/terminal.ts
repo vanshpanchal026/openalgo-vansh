@@ -2547,6 +2547,18 @@ export class TradingTerminal {
     }
     ;(this.chart as unknown as { _hasFitContent?: boolean })._hasFitContent = true
     this.chart.on('resize', () => {
+      if (this.chartSettingsSaved['scales.autoScale'] === false) {
+        const primary = this.chart?.panes()[0]?.readoutScale()
+        if (primary?.scaled) {
+          this.chart?.setAutoScale(false)
+        } else {
+          requestAnimationFrame(() => {
+            if (this.chartSettingsSaved['scales.autoScale'] === false) {
+              this.chart?.setAutoScale(false)
+            }
+          })
+        }
+      }
       if (this.userViewport && !this.isApplyingViewport && !this.destroyed) {
         this.applyDefaultViewport()
       }
@@ -7139,6 +7151,10 @@ export class TradingTerminal {
       this.rawBars = []
       if (!opts.silent)
         this.loadOutcome = chartLoadFailed(this.sym.symbol, this.interval, this.cleanError(e))
+      this.price?.setData([])
+      this.volume?.setData([])
+      this.refreshLegend()
+      this.cb.onSymbolLoaded(this.sym)
       return false // caller may fall back (e.g. to the default symbol)
     }
     // Validate before assigning: an older response must neither overwrite the
@@ -7152,6 +7168,10 @@ export class TradingTerminal {
           ? chartLoadFailed(this.sym.symbol, this.interval, this.cleanError(error))
           : chartNoData(this.sym.symbol, this.interval)
       }
+      this.price?.setData([])
+      this.volume?.setData([])
+      this.refreshLegend()
+      this.cb.onSymbolLoaded(this.sym)
       return false
     }
     this.lastLtp = this.rawBars[this.rawBars.length - 1].close

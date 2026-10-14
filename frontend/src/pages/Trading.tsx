@@ -331,6 +331,7 @@ function TradingWorkspace({ account }: { account: string | null }) {
   activeWatchlistItemsRef.current = watchlistItems
   const paneSymbolsRef = useRef(paneSymbols)
   paneSymbolsRef.current = paneSymbols
+  const activeNavSymbolRef = useRef<string | null>(null)
   const [paneObjects, setPaneObjects] = useState<Record<string, ChartObjects>>({})
   const [paneAlerts, setPaneAlerts] = useState<Record<string, AlertsView>>({})
   /**
@@ -567,6 +568,7 @@ function TradingWorkspace({ account }: { account: string | null }) {
       }
       if (paneId) {
         setFocusedPane(paneId)
+        activeNavSymbolRef.current = paneSymbolsRef.current[paneId] ?? null
         // The context follows the focused pane, so focusing another one changes
         // the answer without any chart having changed.
         noteChartChanged()
@@ -579,6 +581,9 @@ function TradingWorkspace({ account }: { account: string | null }) {
   const noteSymbol = useCallback(
     (paneId: string, key: string | null) => {
       setPaneSymbols((prev) => (prev[paneId] === key ? prev : { ...prev, [paneId]: key }))
+      if (paneId === focusedPaneRef.current && key) {
+        activeNavSymbolRef.current = key
+      }
       noteChartChanged()
       // A pane on a preset range shows the same span of its new bars.
       const terminal = terminalsRef.current[paneId]
@@ -597,9 +602,16 @@ function TradingWorkspace({ account }: { account: string | null }) {
   const sendToFocusedPane = useCallback(
     (row: SearchRow) => {
       stopWorkspaceReplay()
+      if (row.symbol) {
+        const exch = (row.exchange || 'NSE').trim().toUpperCase()
+        const sym = row.symbol.trim().toUpperCase()
+        const key = `${exch}:${sym}`
+        activeNavSymbolRef.current = key
+        noteSymbol(focusedPaneRef.current, key)
+      }
       void panelTarget()?.loadSymbol(row)
     },
-    [panelTarget, stopWorkspaceReplay]
+    [noteSymbol, panelTarget, stopWorkspaceReplay]
   )
 
   /**
@@ -812,12 +824,17 @@ function TradingWorkspace({ account }: { account: string | null }) {
       e.preventDefault()
       e.stopPropagation()
 
-      const currentSym = (paneSymbolsRef.current[focusedPaneRef.current] ?? '').trim().toUpperCase()
+      const currentSym = (activeNavSymbolRef.current || paneSymbolsRef.current[focusedPaneRef.current] || '').trim().toUpperCase()
       const currentIndex = items.findIndex((item) => {
         const itemSym = (item.symbol ?? '').trim().toUpperCase()
         const itemExch = (item.exchange ?? '').trim().toUpperCase()
         const fullKey = `${itemExch}:${itemSym}`
-        return currentSym === fullKey || currentSym === itemSym
+        return (
+          currentSym === fullKey ||
+          currentSym === itemSym ||
+          currentSym.endsWith(`:${itemSym}`) ||
+          fullKey.endsWith(`:${currentSym}`)
+        )
       })
 
       let targetIndex = 0
@@ -831,6 +848,9 @@ function TradingWorkspace({ account }: { account: string | null }) {
 
       const targetItem = items[targetIndex]
       if (targetItem) {
+        const exch = (targetItem.exchange || 'NSE').trim().toUpperCase()
+        const sym = targetItem.symbol.trim().toUpperCase()
+        activeNavSymbolRef.current = `${exch}:${sym}`
         sendToFocusedPane({ symbol: targetItem.symbol, exchange: targetItem.exchange })
       }
     }

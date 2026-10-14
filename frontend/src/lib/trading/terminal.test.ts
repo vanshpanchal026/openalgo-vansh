@@ -859,3 +859,18 @@ describe('a chart with an armed alert stays awake when the tab is hidden', () =>
     expect(source).toContain('this.comparisons?.setVisibleHost(visible)')
   })
 })
+
+describe('volume overlay price scale margins', () => {
+  const source = readFileSync(join(process.cwd(), 'src/lib/trading/terminal.ts'), 'utf8')
+
+  it('never calls setPriceScaleOptions with "all" scope which wipes out volume scale margins', () => {
+    // Calling setPriceScaleOptions with 'all' applies price margins (e.g. 10% top margin)
+    // to overlay scales as well, causing volume bars to grow to 90% of the chart height
+    // and shoot right through candles into the middle of the chart.
+    expect(source).not.toMatch(/setPriceScaleOptions\([^)]*,\s*['"]all['"]\)/)
+  })
+
+  it('re-asserts volume overlay scale margins so volume histogram stays in the bottom fifth', () => {
+    expect(source).toContain('this.volume.priceScale().setOptions({ marginTop: 0.82, marginBottom: 0 })')
+  })
+})
