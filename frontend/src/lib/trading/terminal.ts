@@ -979,7 +979,7 @@ export function buildOrderTicket(input: {
 }
 const VISIBLE_BARS = 120
 /** Empty bars kept between the newest candle and the price axis. */
-const RIGHT_PAD_BARS = 4
+const RIGHT_PAD_BARS = 10
 
 /**
  * Where the exported PNG paints the OHLC readout, in CSS px. These mirror the
@@ -1239,6 +1239,13 @@ export class TradingTerminal {
   private availableIntervals: string[] = ['1m', '5m', '15m', '1h', 'D']
   /** The bottom bar's preset range for this pane, kept while its interval holds. */
   private rangeChoice: RangeChoice | null = null
+  /**
+   * Preserved user viewport preferences across symbol switches:
+   * ensures time zoom (visibleSpan / barSpacing) and right padding (rightOffset)
+   * never reset when flipping charts.
+   */
+  private userViewport: { visibleSpan: number; rightOffset: number; barSpacing?: number } | null = null
+  private isApplyingViewport = false
   /** The load in flight, or the last one: what `showInterval` waits on. */
   private loading: Promise<boolean> = Promise.resolve(true)
   /** The workspace link group this pane belongs to, if sync is on. */
@@ -2525,6 +2532,21 @@ export class TradingTerminal {
       // less motion.
       ...chartMotionOptions(),
     })
+    // Apply TradingView-style canvas plot margins (Top 10%, Bottom 8%) and autoScale
+    const topMarginPct = Number(this.chartSettingsSaved['canvas.margins.top'] ?? 10) / 100
+    const bottomMarginPct = Number(this.chartSettingsSaved['canvas.margins.bottom'] ?? 8) / 100
+    try {
+      this.chart.setPriceScaleOptions({
+        marginTop: topMarginPct,
+        marginBottom: bottomMarginPct,
+      })
+      this.chart.setAutoScale(true)
+      this.chart.timeScale.setChangeHandler(() => {
+        this.captureCurrentViewport()
+      })
+    } catch {
+      /* ignore */
+    }
     this.chart.setDataContext(
       this.sym
         ? {
@@ -2871,6 +2893,15 @@ export class TradingTerminal {
       const parsed = raw ? (JSON.parse(raw) as Record<string, string | number | boolean>) : null
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         this.chartSettingsSaved = parsed
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const rawVp = this.lsGet('viewport') || localStorage.getItem('oa-trading-viewport')
+      const parsedVp = rawVp ? (JSON.parse(rawVp) as { visibleSpan: number; rightOffset: number; barSpacing?: number }) : null
+      if (parsedVp && typeof parsedVp === 'object' && Number.isFinite(parsedVp.visibleSpan)) {
+        this.userViewport = parsedVp
       }
     } catch {
       /* ignore */
@@ -4758,13 +4789,44 @@ export class TradingTerminal {
             }
       ),
     }))
+    const appearanceTab = tabs.find((t) => t.id === 'appearance')
+    if (appearanceTab) {
+      const hasRightMargin = appearanceTab.inputs.some(
+        (i) => 'key' in i && (i as { key: string }).key === 'canvas.margins.right'
+      )
+      if (!hasRightMargin) {
+        appearanceTab.inputs.push({
+          key: 'canvas.margins.right',
+          type: 'number',
+          label: 'Right margin bars',
+          group: 'Plot margins',
+          min: 0,
+          max: 50,
+          step: 1,
+        } as IndicatorField)
+      }
+    }
+    const currentValues: Record<string, string | number | boolean> = {
+      ...readChartSettings(chart),
+      'canvas.margins.top': Number(this.chartSettingsSaved['canvas.margins.top'] ?? 10),
+      'canvas.margins.bottom': Number(this.chartSettingsSaved['canvas.margins.bottom'] ?? 8),
+      'canvas.margins.right': Number(
+        this.chartSettingsSaved['canvas.margins.right'] ?? this.userViewport?.rightOffset ?? RIGHT_PAD_BARS
+      ),
+    }
+    const defaultValues: Record<string, string | number | boolean> = {
+      ...this.chartDefaults,
+      'canvas.margins.top': 10,
+      'canvas.margins.bottom': 8,
+      'canvas.margins.right': 10,
+    }
     return priceAxisSettingsView(
       volumeSettingsView(
         profileSettingsView(
           {
             tabs,
-            values: { ...readChartSettings(chart) },
-            defaults: { ...this.chartDefaults },
+            values: currentValues,
+            defaults: defaultValues,
           },
           this.ctype,
           this.chartSettingsSaved
@@ -4803,6 +4865,9 @@ export class TradingTerminal {
         defaults[`transform.${option}`] = value
       }
     }
+    defaults['canvas.margins.top'] = 10
+    defaults['canvas.margins.bottom'] = 8
+    defaults['canvas.margins.right'] = 10
     this.chartDefaults = defaults
   }
 
@@ -4836,10 +4901,24 @@ export class TradingTerminal {
     const enginePatch = Object.fromEntries(
       Object.entries(given).filter(
         ([key]) =>
-          !key.startsWith('profiles.') && !key.startsWith('volume.') && !isPriceAxisSetting(key)
+          !key.startsWith('profiles.') &&
+          !key.startsWith('volume.') &&
+          !isPriceAxisSetting(key) &&
+          key !== 'canvas.margins.right'
       )
     )
     const merged = { ...this.chartSettingsSaved, ...patch }
+    if ('canvas.margins.right' in given) {
+      const rightVal = Math.max(0, Math.min(50, Number(given['canvas.margins.right']) || 10))
+      patch['canvas.margins.right'] = rightVal
+      merged['canvas.margins.right'] = rightVal
+      this.userViewport = {
+        visibleSpan: this.userViewport?.visibleSpan ?? VISIBLE_BARS,
+        rightOffset: rightVal,
+        barSpacing: this.userViewport?.barSpacing,
+      }
+      this.persistUserViewport()
+    }
     if (
       isProfileKind(this.ctype) &&
       !selectProfileInterval(
@@ -4859,12 +4938,15 @@ export class TradingTerminal {
       this.rememberTransformChoice()
       this.afterTransformChange()
     }
-    const defaults = {
+    const defaults: Record<string, string | number | boolean> = {
       ...this.chartDefaults,
       ...profileDefaults('tpo'),
       ...profileDefaults('session-volume-profile'),
       ...VOLUME_DEFAULTS,
       ...PRICE_AXIS_DEFAULTS,
+      'canvas.margins.top': 10,
+      'canvas.margins.bottom': 8,
+      'canvas.margins.right': 10,
     }
     for (const kind of ['tpo', 'session-volume-profile'] as const) {
       const normalized = profileValues(kind, merged)
@@ -4887,6 +4969,13 @@ export class TradingTerminal {
     this.adoptGridFromPatch(patch)
     this.refreshDisplayedVolume()
     this.refreshLegend(this.drawnBars())
+    if (
+      'canvas.margins.right' in given ||
+      'canvas.margins.top' in given ||
+      'canvas.margins.bottom' in given
+    ) {
+      this.applyDefaultViewport()
+    }
     if (isProfileKind(this.ctype)) {
       const interval = this.compatibleProfileInterval(this.ctype)
       if (interval && interval !== this.interval) {
@@ -4942,6 +5031,7 @@ export class TradingTerminal {
               !key.startsWith('volume.') &&
               !transformSetting(key) &&
               !isPriceAxisSetting(key) &&
+              key !== 'canvas.margins.right' &&
               // Pinned once measured, below: pinned now it would hold no range.
               !(key === 'scales.autoScale' && this.chartSettingsSaved[key] === false)
           )
@@ -6885,6 +6975,13 @@ export class TradingTerminal {
   ): Promise<boolean> {
     const feed = this.cachedBars ?? this.rest
     if (!feed) return false
+    this.captureCurrentViewport()
+    if (this.sym && (this.sym.symbol !== pick.symbol || this.sym.exchange !== pick.exchange)) {
+      if ('scales.autoScale' in this.chartSettingsSaved) {
+        delete this.chartSettingsSaved['scales.autoScale']
+        this.lsSet('chartsettings', JSON.stringify(this.chartSettingsSaved))
+      }
+    }
     /**
      * Claim this load. Two awaits follow -- the symbol lookup and the bars --
      * and a second call arriving inside either of them used to run to
@@ -7071,6 +7168,7 @@ export class TradingTerminal {
       )
       return this.interval
     }
+    this.captureCurrentViewport()
     this.stopReplay() // same reason as loadSymbol: the bars are about to change
     this.interval = iv
     // A preset range holds while its interval does; any other change ends it.
@@ -7088,6 +7186,7 @@ export class TradingTerminal {
       this.toast('The broker has no intraday interval compatible with this profile', 'err')
       return this.ctype
     }
+    this.captureCurrentViewport()
     this.stopReplay()
     this.ctype = v
     this.lsSet('ctype', v)
@@ -7150,38 +7249,87 @@ export class TradingTerminal {
     if (this.chart && this.rawBars.length) this.buildChart()
   }
 
-  /**
-   * The zoom the chart opens at: a FIXED number of recent bars, so the visible
-   * price range, and the cursor to price mapping, are the same on every screen
-   * width.
-   *
-   * The trailing pad is what keeps the newest candle off the price axis. It is
-   * measured in bars, which is the reason it has to be applied together with the
-   * bar count and not on its own: four bars is a comfortable margin at this
-   * zoom and three pixels once a month of five-minute history is squeezed into
-   * one screen.
-   */
-  private applyDefaultViewport(): void {
-    if (!this.chart) return
-    if (this.shownCount > VISIBLE_BARS) {
-      const to = this.shownCount - 1 + RIGHT_PAD_BARS
-      this.chart.timeScale.setVisibleLogicalRange({ from: to - VISIBLE_BARS, to })
-    } else if (this.chart.timeScale.barSpacing > 14) {
-      this.chart.timeScale.setBarSpacing(14)
+  private captureCurrentViewport(): void {
+    if (this.isApplyingViewport || !this.chart || this.destroyed || this.shownCount <= 0) return
+    try {
+      const range = this.chart.timeScale.getVisibleLogicalRange()
+      if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) return
+      const span = range.to - range.from
+      if (span <= 4 || span > 5000) return
+      const rawOffset = Math.round(range.to - (this.shownCount - 1))
+      const rightOffset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : RIGHT_PAD_BARS
+      const spacing = this.chart.timeScale.barSpacing
+      this.userViewport = {
+        visibleSpan: Math.round(span),
+        rightOffset,
+        barSpacing: Number.isFinite(spacing) && spacing > 0 ? spacing : undefined,
+      }
+      this.persistUserViewport()
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private persistUserViewport(): void {
+    if (!this.userViewport) return
+    try {
+      this.lsSet('viewport', JSON.stringify(this.userViewport))
+      localStorage.setItem('oa-trading-viewport', JSON.stringify(this.userViewport))
+    } catch {
+      /* ignore */
     }
   }
 
   /**
-   * Reset returns to the view the chart opened at, not to the whole of history.
-   *
-   * `chart.resetScale()` alone re-enables price autoscale and then fits every
-   * loaded bar, which on a month of five-minute history is roughly 1900 candles
-   * across 1400 px: sub-pixel bars, and a trailing gap of three pixels because
-   * that gap is counted in bars too. A reference terminal returns to a readable
-   * window instead, which is also what this chart did when it loaded.
+   * The zoom and margins the chart opens at: preserves user's zoom level (visible bars span)
+   * and right padding (default 10 bars) across symbol changes, just like TradingView.
+   * Also ensures price scale is auto-scaled with 10% top / 8% bottom margins.
+   */
+  private applyDefaultViewport(): void {
+    if (!this.chart || this.shownCount <= 0) return
+    this.isApplyingViewport = true
+    try {
+      const savedRight = this.chartSettingsSaved['canvas.margins.right']
+      const rightOffset =
+        savedRight !== undefined ? Number(savedRight) : (this.userViewport?.rightOffset ?? RIGHT_PAD_BARS)
+      const targetSpan =
+        this.userViewport?.visibleSpan &&
+        Number.isFinite(this.userViewport.visibleSpan) &&
+        this.userViewport.visibleSpan > 5
+          ? this.userViewport.visibleSpan
+          : VISIBLE_BARS
+
+      const to = this.shownCount - 1 + rightOffset
+      const from = to - targetSpan
+      this.chart.timeScale.setVisibleLogicalRange({ from, to })
+
+      // Prevent candles from stretching into giant blocks on young/SME stocks with few bars
+      if (this.chart.timeScale.barSpacing > 24) {
+        this.chart.timeScale.setBarSpacing(24)
+      }
+
+      // Ensure price scale is auto-scaled and centered with 10% top / 8% bottom margins
+      const topMarginPct = Number(this.chartSettingsSaved['canvas.margins.top'] ?? 10) / 100
+      const bottomMarginPct = Number(this.chartSettingsSaved['canvas.margins.bottom'] ?? 8) / 100
+      this.chart.setPriceScaleOptions({
+        marginTop: topMarginPct,
+        marginBottom: bottomMarginPct,
+      })
+      this.chart.setAutoScale(true)
+    } catch {
+      /* ignore */
+    } finally {
+      this.isApplyingViewport = false
+    }
+  }
+
+  /**
+   * Reset returns to the standard readable window with 10 bars right padding.
    */
   resetScale() {
     if (!this.chart) return
+    this.userViewport = { visibleSpan: VISIBLE_BARS, rightOffset: RIGHT_PAD_BARS }
+    this.persistUserViewport()
     this.chart.resetScale()
     this.applyDefaultViewport()
   }
