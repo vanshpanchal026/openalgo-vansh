@@ -110,7 +110,6 @@ import {
   PRICE_AXIS_DEFAULTS,
   PriceAxisController,
   type PriceAxisCommand,
-  pinOnceMeasured,
   type PriceAxisMenu,
   priceAxisPatch,
   priceAxisSettingsView,
@@ -2531,15 +2530,42 @@ export class TradingTerminal {
       // Zoom and autoscale snap instead of easing when the system asks for
       // less motion.
       ...chartMotionOptions(),
+      canvas: {
+        margins: {
+          top: Number(this.chartSettingsSaved['canvas.margins.top'] ?? 10),
+          bottom: Number(this.chartSettingsSaved['canvas.margins.bottom'] ?? 8),
+        },
+      },
     })
+    // Immediately apply container dimensions so timeScale has non-zero width,
+    // and mark _hasFitContent = true so the engine's asynchronous ResizeObserver
+    // never overrides our saved viewport with _fitDefaultView()!
+    const initW = this.container.clientWidth
+    const initH = this.container.clientHeight
+    if (initW > 0 && initH > 0) {
+      this.chart.applySize(initW, initH)
+    }
+    ;(this.chart as unknown as { _hasFitContent?: boolean })._hasFitContent = true
+    this.chart.on('resize', () => {
+      if (this.userViewport && !this.isApplyingViewport && !this.destroyed) {
+        this.applyDefaultViewport()
+      }
+    })
+
     // Apply TradingView-style canvas plot margins (Top 10%, Bottom 8%) and autoScale
     const topMarginPct = Number(this.chartSettingsSaved['canvas.margins.top'] ?? 10) / 100
     const bottomMarginPct = Number(this.chartSettingsSaved['canvas.margins.bottom'] ?? 8) / 100
     try {
+      this.chart.setCanvasOptions({
+        margins: {
+          top: Math.round(topMarginPct * 100),
+          bottom: Math.round(bottomMarginPct * 100),
+        },
+      })
       this.chart.setPriceScaleOptions({
         marginTop: topMarginPct,
         marginBottom: bottomMarginPct,
-      })
+      }, 'all')
       this.chart.setAutoScale(true)
       this.chart.timeScale.setChangeHandler(() => {
         this.captureCurrentViewport()
@@ -2893,6 +2919,7 @@ export class TradingTerminal {
       const parsed = raw ? (JSON.parse(raw) as Record<string, string | number | boolean>) : null
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         this.chartSettingsSaved = parsed
+        delete this.chartSettingsSaved['scales.autoScale']
       }
     } catch {
       /* ignore */
@@ -4791,6 +4818,7 @@ export class TradingTerminal {
     }))
     const appearanceTab = tabs.find((t) => t.id === 'appearance')
     if (appearanceTab) {
+      appearanceTab.label = 'Canvas'
       const hasRightMargin = appearanceTab.inputs.some(
         (i) => 'key' in i && (i as { key: string }).key === 'canvas.margins.right'
       )
@@ -5037,8 +5065,6 @@ export class TradingTerminal {
           )
         )
       )
-      if (this.chartSettingsSaved['scales.autoScale'] === false)
-        pinOnceMeasured(chart, () => chart === this.chart && !this.destroyed)
       this.syncPriceAxis()
       this.installProfile()
       this.refreshDisplayedVolume()
@@ -7289,6 +7315,21 @@ export class TradingTerminal {
     if (!this.chart || this.shownCount <= 0) return
     this.isApplyingViewport = true
     try {
+      // Ensure the chart engine has measured the container
+      if (this.chart.timeScale.width <= 0) {
+        const w = this.container.clientWidth
+        const h = this.container.clientHeight
+        if (w > 0 && h > 0) {
+          this.chart.applySize(w, h)
+        }
+      }
+      ;(this.chart as unknown as { _hasFitContent?: boolean })._hasFitContent = true
+
+      if (this.chart.timeScale.width <= 0) {
+        requestAnimationFrame(() => this.applyDefaultViewport())
+        return
+      }
+
       const savedRight = this.chartSettingsSaved['canvas.margins.right']
       const rightOffset =
         savedRight !== undefined ? Number(savedRight) : (this.userViewport?.rightOffset ?? RIGHT_PAD_BARS)
@@ -7311,9 +7352,29 @@ export class TradingTerminal {
       // Ensure price scale is auto-scaled and centered with 10% top / 8% bottom margins
       const topMarginPct = Number(this.chartSettingsSaved['canvas.margins.top'] ?? 10) / 100
       const bottomMarginPct = Number(this.chartSettingsSaved['canvas.margins.bottom'] ?? 8) / 100
+
+      this.chart.setCanvasOptions({
+        margins: {
+          top: Math.round(topMarginPct * 100),
+          bottom: Math.round(bottomMarginPct * 100),
+        },
+      })
+      this.price?.priceScale().setOptions({
+        marginTop: topMarginPct,
+        marginBottom: bottomMarginPct,
+      })
       this.chart.setPriceScaleOptions({
         marginTop: topMarginPct,
         marginBottom: bottomMarginPct,
+      }, 'all')
+
+      // Clear any manual fixed ranges and ensure autoScale is strictly on
+      this.chart.panes().forEach((pane) => {
+        pane.clearRatioLocks()
+        pane.scales().forEach((scale) => {
+          scale.setFixedRange(null)
+          scale.setAutoScale(true)
+        })
       })
       this.chart.setAutoScale(true)
     } catch {
