@@ -39,6 +39,11 @@ describe('chart state wording', () => {
     ['status code 429: Too many requests.', /^Too many requests$/],
     ['', /^The broker did not return bars$/],
     ['symbol not found', /^Symbol not found$/],
+    ['openalgo-charts: history request failed (500)', /^The broker did not return bars$/],
+    ['history request failed (401)', /^Broker session expired$/],
+    ['history request failed (403)', /^Broker session expired$/],
+    ['Authentication failed. Please check your API key and auth token.', /^Broker session expired$/],
+    ['Angel API rate limit exceeded. Please retry shortly.', /^Broker rate limit exceeded$/],
   ])('keeps %j trader-facing', (raw, expected) => {
     expect(traderReason(raw)).toMatch(expected)
   })

@@ -14,6 +14,7 @@
 
 import {
   ChevronDown,
+  Flag,
   GripVertical,
   MoreHorizontal,
   Plus,
@@ -22,7 +23,14 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { type Watchlist, type WatchlistItem, watchlistApi, watchlistError } from '@/api/watchlist'
+import {
+  type FlagColor,
+  type Watchlist,
+  type WatchlistItem,
+  watchlistApi,
+  watchlistError,
+} from '@/api/watchlist'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -216,11 +224,106 @@ function symbolTint(symbol: string): string {
 }
 
 /** The row and its column header share this, so the two cannot drift apart. */
-/** The row and its header share this, so the two cannot drift apart. */
 function rowGrid(columns: typeof COLUMNS): string {
   // 1fr for the symbol, each chosen column at its own width, 16px for the
   // remove control.
   return `1fr ${columns.map((c) => `${c.width}px`).join(' ')} 16px`
+}
+
+export const FLAG_COLORS: {
+  id: FlagColor
+  label: string
+  hex: string
+}[] = [
+  { id: 'red', label: 'Red', hex: '#ef4444' },
+  { id: 'blue', label: 'Blue', hex: '#2962ff' },
+  { id: 'green', label: 'Green', hex: '#26a69a' },
+  { id: 'orange', label: 'Orange', hex: '#ff9800' },
+  { id: 'purple', label: 'Purple', hex: '#ab47bc' },
+  { id: 'cyan', label: 'Cyan', hex: '#00bcd4' },
+  { id: 'pink', label: 'Pink', hex: '#f48fb1' },
+]
+
+function FlagPopover({
+  item,
+  activeFlag,
+  onToggleFlag,
+}: {
+  item: WatchlistItem
+  activeFlag?: { color: FlagColor; hex: string }
+  onToggleFlag: (symbol: string, exchange: string, color: FlagColor) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const isFlagged = Boolean(activeFlag)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={(e) => {
+            e.stopPropagation()
+          }}
+          className={cn(
+            'relative z-10 flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity focus-visible:outline-none',
+            isFlagged ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
+          )}
+          title={
+            activeFlag
+              ? `${activeFlag.color.charAt(0).toUpperCase() + activeFlag.color.slice(1)} flag. Click to change or unflag`
+              : 'Flag symbol'
+          }
+          aria-label={
+            activeFlag
+              ? `${activeFlag.color} flag for ${item.symbol}`
+              : `Flag ${item.symbol}`
+          }
+        >
+          <Flag
+            className={cn('h-3 w-3', !isFlagged && 'text-muted-foreground/70 hover:text-foreground')}
+            style={
+              activeFlag
+                ? { color: activeFlag.hex, fill: activeFlag.hex }
+                : undefined
+            }
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={6}
+        onClick={(e) => e.stopPropagation()}
+        className="z-50 flex w-auto items-center gap-2 rounded-full border border-border/80 bg-[#16181e] p-1.5 shadow-2xl backdrop-blur-md"
+      >
+        {FLAG_COLORS.map((fc) => {
+          const isCurrent = activeFlag?.color === fc.id
+          return (
+            <button
+              key={fc.id}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleFlag(item.symbol, item.exchange, fc.id)
+                setOpen(false)
+              }}
+              title={isCurrent ? `Remove ${fc.label} flag` : `Flag as ${fc.label}`}
+              className={cn(
+                'relative flex h-5 w-5 items-center justify-center rounded-full transition-transform hover:scale-115 focus-visible:outline-none',
+                isCurrent && 'ring-2 ring-white ring-offset-1 ring-offset-[#16181e]'
+              )}
+            >
+              <span
+                className="h-3.5 w-3.5 rounded-full shadow-sm"
+                style={{ backgroundColor: fc.hex }}
+              />
+            </button>
+          )
+        })}
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsChange }: Props) {
@@ -289,6 +392,28 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
     [lists, activeId]
   )
 
+  const flaggedLists = useMemo(
+    () => lists.filter((l) => l.is_flagged_list),
+    [lists]
+  )
+  const customLists = useMemo(
+    () => lists.filter((l) => !l.is_flagged_list),
+    [lists]
+  )
+
+  const flaggedSymbolsMap = useMemo(() => {
+    const map = new Map<string, { color: FlagColor; hex: string }>()
+    for (const list of flaggedLists) {
+      if (list.flag_color && list.flag_hex) {
+        for (const item of list.items) {
+          const key = `${item.exchange}:${item.symbol}`
+          map.set(key, { color: list.flag_color, hex: list.flag_hex })
+        }
+      }
+    }
+    return map
+  }, [flaggedLists])
+
   /* ── loading ──────────────────────────────────────────────────────────── */
   const loadLists = useCallback(async (): Promise<Watchlist[] | null> => {
     try {
@@ -328,7 +453,8 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
       if (loaded) {
         setLists(loaded)
         const saved = Number(localStorage.getItem(ACTIVE_LIST_KEY))
-        setActiveId(loaded.some((l) => l.id === saved) ? saved : loaded[0].id)
+        const defaultList = loaded.find((l) => !l.is_flagged_list) ?? loaded[0]
+        setActiveId(loaded.some((l) => l.id === saved) ? saved : defaultList.id)
       }
       setLoading(false)
     })()
@@ -346,9 +472,50 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
       const loaded = await watchlistApi.list()
       setLists(loaded)
       if (selectId != null) setActiveId(selectId)
-      else if (loaded.length && !loaded.some((l) => l.id === activeId)) setActiveId(loaded[0].id)
+      else if (loaded.length && !loaded.some((l) => l.id === activeId)) {
+        const defaultList = loaded.find((l) => !l.is_flagged_list) ?? loaded[0]
+        setActiveId(defaultList.id)
+      }
     },
     [activeId]
+  )
+
+  const handleToggleFlag = useCallback(
+    async (symbol: string, exchange: string, color: FlagColor) => {
+      const key = `${exchange}:${symbol}`
+      const current = flaggedSymbolsMap.get(key)
+      const isSameColor = current?.color === color
+      const targetListName = `${FLAG_COLORS.find((c) => c.id === color)?.label ?? 'Red'} list`
+
+      // Optimistic state update
+      setLists((prev) =>
+        prev.map((l) => {
+          if (!l.is_flagged_list) return l
+          const filteredItems = l.items.filter(
+            (i) => !(i.symbol === symbol && i.exchange === exchange)
+          )
+          if (l.name === targetListName && !isSameColor) {
+            const nextPos = Math.max(-1, ...filteredItems.map((i) => i.position)) + 1
+            return {
+              ...l,
+              items: [
+                ...filteredItems,
+                { id: Date.now(), symbol, exchange, position: nextPos },
+              ],
+            }
+          }
+          return { ...l, items: filteredItems }
+        })
+      )
+
+      try {
+        await watchlistApi.toggleFlag(symbol, exchange, color)
+      } catch (error) {
+        showToast.error(watchlistError(error, 'Could not toggle flag'))
+        await refresh().catch(() => {})
+      }
+    },
+    [flaggedSymbolsMap, refresh]
   )
 
   const retry = async () => {
@@ -359,7 +526,8 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
       // Keep the list the user was on. Jumping to the first one made a
       // recovered failure look like a lost selection.
       const saved = Number(localStorage.getItem(ACTIVE_LIST_KEY))
-      setActiveId(loaded.some((l) => l.id === saved) ? saved : loaded[0].id)
+      const defaultList = loaded.find((l) => !l.is_flagged_list) ?? loaded[0]
+      setActiveId(loaded.some((l) => l.id === saved) ? saved : defaultList.id)
     }
     setLoading(false)
   }
@@ -531,6 +699,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
     if (!confirm || !active) return
     try {
       if (confirm.kind === 'delete') {
+        if (active.is_flagged_list) return
         await watchlistApi.remove(active.id)
         const remaining = lists.filter((l) => l.id !== active.id)
         // Deleting the last list would leave the panel with nothing to act on,
@@ -539,7 +708,8 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
           const created = await watchlistApi.create(DEFAULT_LIST_NAME)
           await refresh(created.id)
         } else {
-          await refresh(remaining[0].id)
+          const defaultList = remaining.find((l) => !l.is_flagged_list) ?? remaining[0]
+          await refresh(defaultList.id)
         }
       } else {
         await watchlistApi.clear(active.id)
@@ -683,9 +853,15 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex h-8 min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 text-left text-[13px] font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-[13px] font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               disabled={!active}
             >
+              {active?.is_flagged_list && (
+                <Flag
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{ color: active.flag_hex, fill: active.flag_hex }}
+                />
+              )}
               <span className="truncate">{active?.name ?? 'Watchlist'}</span>
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             </button>
@@ -695,7 +871,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
               Create new list...
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={!active}
+              disabled={!active || active.is_flagged_list}
               onSelect={() =>
                 active && setNameDialog({ mode: 'copy', value: `${active.name} copy` })
               }
@@ -703,7 +879,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
               Make a copy...
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={!active}
+              disabled={!active || active.is_flagged_list}
               onSelect={() => active && setNameDialog({ mode: 'rename', value: active.name })}
             >
               Rename...
@@ -723,24 +899,51 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
               Clear list
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={!active}
+              disabled={!active || active.is_flagged_list}
               className="text-destructive focus:text-destructive"
               onSelect={() => active && setConfirm({ kind: 'delete', name: active.name })}
             >
               Delete list
             </DropdownMenuItem>
 
-            {lists.length > 1 && (
+            {flaggedLists.length > 0 && (
               <>
                 <DropdownMenuSeparator />
                 <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
-                  Your lists
+                  Flagged lists
                 </div>
-                {lists.map((list) => (
+                {flaggedLists.map((list) => (
                   <DropdownMenuItem
                     key={list.id}
                     onSelect={() => setActiveId(list.id)}
-                    className={cn(list.id === active?.id && 'bg-accent')}
+                    className={cn(list.id === active?.id && 'bg-accent font-medium')}
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <Flag
+                        className="h-3.5 w-3.5 shrink-0"
+                        style={{ color: list.flag_hex, fill: list.flag_hex }}
+                      />
+                      <span className="truncate">{list.name}</span>
+                    </span>
+                    <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                      {list.items.length}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+
+            {customLists.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                  Watchlists
+                </div>
+                {customLists.map((list) => (
+                  <DropdownMenuItem
+                    key={list.id}
+                    onSelect={() => setActiveId(list.id)}
+                    className={cn(list.id === active?.id && 'bg-accent font-medium')}
                   >
                     <span className="flex-1 truncate">{list.name}</span>
                     <span className="ml-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
@@ -859,11 +1062,28 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
-            <Search className="h-5 w-5 text-muted-foreground/50" />
-            <p className="text-[12px] text-muted-foreground">This list is empty.</p>
-            <Button variant="outline" size="sm" className="h-7" onClick={() => setSearchOpen(true)}>
-              Add an instrument
-            </Button>
+            {active?.is_flagged_list ? (
+              <>
+                <Flag
+                  className="h-6 w-6"
+                  style={{ color: active.flag_hex, fill: active.flag_hex }}
+                />
+                <p className="text-[12px] font-medium text-foreground">
+                  No {active.name.toLowerCase()} symbols yet
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Click the flag icon on any symbol to add it here.
+                </p>
+              </>
+            ) : (
+              <>
+                <Search className="h-5 w-5 text-muted-foreground/50" />
+                <p className="text-[12px] text-muted-foreground">This list is empty.</p>
+                <Button variant="outline" size="sm" className="h-7" onClick={() => setSearchOpen(true)}>
+                  Add an instrument
+                </Button>
+              </>
+            )}
           </div>
         ) : (
           items.map((item, index) => {
@@ -976,21 +1196,26 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
                     width at all, which is the column under the most pressure. */}
                 <GripVertical className="pointer-events-none absolute left-0 top-1/2 h-3 w-3 -translate-y-1/2 text-transparent transition-colors group-hover:text-muted-foreground/50" />
 
-                <span className="pointer-events-none relative flex min-w-0 items-center gap-1.5">
+                <span className="relative flex min-w-0 items-center gap-1.5">
+                  <FlagPopover
+                    item={item}
+                    activeFlag={flaggedSymbolsMap.get(key)}
+                    onToggleFlag={handleToggleFlag}
+                  />
                   {display.logo && (
                     <span
-                      className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                      className="pointer-events-none flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
                       style={{ backgroundColor: symbolTint(item.symbol) }}
                       aria-hidden="true"
                     >
                       {item.symbol.charAt(0)}
                     </span>
                   )}
-                  <span className="truncate font-medium" title={item.symbol}>
+                  <span className="pointer-events-none truncate font-medium" title={item.symbol}>
                     {item.symbol}
                   </span>
                   {display.exchange && (
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                    <span className="pointer-events-none shrink-0 text-[10px] text-muted-foreground">
                       {item.exchange}
                     </span>
                   )}

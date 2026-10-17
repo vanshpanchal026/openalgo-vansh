@@ -25,6 +25,7 @@ class History(Resource):
     @limiter.limit(API_RATE_LIMIT)
     def post(self):
         """Get historical data for given symbol"""
+        logger.info(f"DEBUG_HISTORY: Entered History.post() with body: {request.get_data(as_text=True)[:200]}")
         try:
             # Validate request data
             history_data = history_schema.load(request.json)

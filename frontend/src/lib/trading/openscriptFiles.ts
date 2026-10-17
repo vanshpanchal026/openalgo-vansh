@@ -466,3 +466,56 @@ export function starterFor(name: string, kind: ScriptKind): string {
     '',
   ].join('\n')
 }
+
+export interface PineConvertResult {
+  source: string
+  findings: Array<{
+    code: string
+    severity: string
+    message: string
+  }>
+  extractedTitle?: string
+  suggestedName?: string
+}
+
+/**
+ * Converts a TradingView Pine Script (v5 or v6) into OpenScript (.oscript).
+ */
+export async function convertPineScript(
+  pineText: string,
+  preferredName?: string
+): Promise<PineConvertResult> {
+  const { importScript } = await import('openalgo-script')
+  let text = pineText.trim()
+  if (!/^\s*\/\/\s*@version/i.test(text)) {
+    text = `//@version=5\n${text}`
+  }
+
+  // Attempt to extract title from indicator('...') or strategy('...')
+  const match = text.match(/(?:indicator|strategy)\s*\(\s*['"]([^'"]+)['"]/i)
+  const extractedTitle = match ? match[1].trim() : undefined
+  let suggestedName: string | undefined
+  if (extractedTitle) {
+    const slug = extractedTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48)
+    if (slug && NAME_PATTERN.test(slug)) {
+      suggestedName = slug
+    }
+  }
+
+  const result = importScript(text, { name: preferredName || suggestedName || 'script.pine' })
+  return {
+    source: result.source,
+    findings: (result.findings || []).map((f) => ({
+      code: f.code,
+      severity: f.severity,
+      message: f.message,
+    })),
+    extractedTitle,
+    suggestedName,
+  }
+}
+

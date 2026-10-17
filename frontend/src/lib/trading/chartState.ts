@@ -45,10 +45,28 @@ export function traderReason(raw: string): string {
   if (NETWORK.test(raw)) {
     return 'OpenAlgo could not be reached. Check that the server is running and the network is up'
   }
+  const lower = raw.toLowerCase()
+  if (
+    lower.includes('history request failed (401)') ||
+    lower.includes('history request failed (403)') ||
+    lower.includes('authentication failed') ||
+    lower.includes('invalid openalgo apikey')
+  ) {
+    return 'Broker session expired'
+  }
+  if (lower.includes('rate limit') || lower.includes('exceeding access rate')) {
+    return 'Broker rate limit exceeded'
+  }
+  if (
+    /^openalgo-charts:\s*history request failed/i.test(raw) ||
+    /^(?:openalgo-charts:\s*)?history\s+request\s+failed\s*(?:\(\d+\))?$/i.test(raw)
+  ) {
+    return 'The broker did not return bars'
+  }
   const text = raw
     .replace(/^\s*(?:history error|[a-z]*error)\s*:\s*/i, '')
-    // The request helper's own wording: `history failed (500): ...`.
-    .replace(/(?:\/api\/v\d+\/)?[\w/.-]+\s+failed\s*\(\d{3}\)\s*:?/gi, '')
+    // The request helper's own wording: `history failed (500): ...` or `history request failed (500): ...`.
+    .replace(/(?:\/api\/v\d+\/)?[\w/.-]+\s+(?:request\s+)?failed\s*\(\d{3}\)\s*:?/gi, '')
     .replace(/\/api\/v\d+\/[\w/.-]*/gi, '')
     .replace(/\s*\((?:HTTP\s*)?\d{3}\)/gi, '')
     .replace(/\b(?:HTTP|status(?: code)?)\s*\d{3}\b:?/gi, '')

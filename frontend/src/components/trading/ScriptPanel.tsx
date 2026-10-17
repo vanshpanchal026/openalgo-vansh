@@ -47,10 +47,12 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  FileCode,
   Loader2,
   MoreHorizontal,
   Play,
   Plus,
+  Sparkles,
   TerminalSquare,
   Trash2,
   Undo2,
@@ -75,6 +77,7 @@ import {
 import {
   type CompileResult,
   compileSource,
+  convertPineScript,
   deleteScript,
   fileNameFor,
   idForScript,
@@ -98,6 +101,8 @@ import {
 } from '@/lib/trading/openscriptSession'
 import { cn } from '@/lib/utils'
 import { PANEL_HEADER, PanelShell } from './panelShell'
+import { ImportPineDialog } from './ImportPineDialog'
+
 
 /** A small header control, matching the objects panel's own. */
 const CHIP =
@@ -228,6 +233,7 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
    */
   const [nameTouched, setNameTouched] = useState(false)
   const [newKind, setNewKind] = useState<ScriptKind>('study')
+  const [importingPine, setImportingPine] = useState(false)
   /**
    * Whether the discard question is on screen.
    *
@@ -610,6 +616,73 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
     }
   }, [newName, newKind, refresh])
 
+  const handleImportSuccess = useCallback(
+    async (file: string, convertedSource: string) => {
+      setBusy(true)
+      try {
+        await saveScript(file, convertedSource)
+        dropDraft(file)
+        setMovedUnder(false)
+        setConfirmingDiscard(false)
+        setOpen(file)
+        setSource(convertedSource)
+        setSaved(convertedSource)
+        setRecents(noteOpened(file))
+        setResult(await compileSource(file, convertedSource))
+        await refresh()
+      } catch (error) {
+        setResult({
+          ok: false,
+          diagnostics: [],
+          problem: error instanceof Error ? error.message : String(error),
+        })
+        setConsoleOpen(true)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refresh]
+  )
+
+  const looksLikePineScript = useMemo(() => {
+    if (!source) return false
+    const trimmed = source.trim()
+    return (
+      (trimmed.includes('@version=') ||
+        trimmed.includes('//@version') ||
+        trimmed.includes('indicator(') ||
+        trimmed.includes('ta.')) &&
+      !trimmed.startsWith('version 1')
+    )
+  }, [source])
+
+  const convertActiveBuffer = useCallback(async () => {
+    if (!source || busy) return
+    setBusy(true)
+    try {
+      const stem = open ? stemOf(open) : 'converted-script'
+      const res = await convertPineScript(source, stem)
+      if (!res.source) {
+        throw new Error('Could not convert Pine Script. Please check script syntax.')
+      }
+      setSource(res.source)
+      if (open) {
+        dropDraft(open)
+        const compiled = await compileSource(open, res.source)
+        setResult(compiled)
+      }
+    } catch (error) {
+      setResult({
+        ok: false,
+        diagnostics: [],
+        problem: error instanceof Error ? error.message : String(error),
+      })
+      setConsoleOpen(true)
+    } finally {
+      setBusy(false)
+    }
+  }, [source, busy, open])
+
   /**
    * Throws the unsaved edit away and puts the saved text back.
    *
@@ -869,6 +942,10 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
               <Plus className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
               New script
             </DropdownMenuItem>
+            <DropdownMenuItem className="text-xs" onSelect={() => setImportingPine(true)}>
+              <FileCode className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
+              Import Pine Script
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -911,11 +988,24 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
                 <MoreHorizontal className="h-4 w-4" strokeWidth={1.5} />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48" onCloseAutoFocus={keepNameFocus}>
+            <DropdownMenuContent align="end" className="w-52" onCloseAutoFocus={keepNameFocus}>
               <DropdownMenuItem className="text-xs" onSelect={startNamingFromMenu}>
                 <Plus className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
                 New script
               </DropdownMenuItem>
+              <DropdownMenuItem className="text-xs" onSelect={() => setImportingPine(true)}>
+                <FileCode className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
+                Import Pine Script
+              </DropdownMenuItem>
+              {looksLikePineScript && (
+                <DropdownMenuItem
+                  className="text-xs text-amber-500 focus:text-amber-500"
+                  onSelect={() => void convertActiveBuffer()}
+                >
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
+                  Convert editor to OpenScript
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 className="text-xs"
                 disabled={busy || !dirty}
@@ -924,6 +1014,7 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
                 <Undo2 className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
                 Discard unsaved changes
               </DropdownMenuItem>
+
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-xs text-destructive focus:text-destructive"
@@ -1103,7 +1194,25 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
         </div>
       ) : (
         <>
+          {looksLikePineScript && (
+            <div className="flex shrink-0 items-center justify-between border-b border-amber-500/20 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                <span className="text-[11px] font-medium">Looks like TradingView Pine Script</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void convertActiveBuffer()}
+                disabled={busy}
+                className="inline-flex items-center gap-1 rounded bg-amber-500 px-2 py-0.5 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400 disabled:opacity-50"
+              >
+                Convert to OpenScript
+              </button>
+            </div>
+          )}
+
           {/* Gutter, colours and text share one scroll position and one line
+
               box. The gutter is not focusable and carries no text a reader
               needs, so it is hidden from assistive technology: the diagnostics
               below already say which line they mean. */}
@@ -1347,9 +1456,16 @@ export function ScriptPanel({ onAddToChart, onBacktest, openFile = null, onOpene
           </div>
         </>
       )}
+      <ImportPineDialog
+        open={importingPine}
+        onOpenChange={setImportingPine}
+        currentEditorSource={source}
+        onImportSuccess={handleImportSuccess}
+      />
     </PanelShell>
   )
 }
+
 
 /** The mark beside a script in the menu that has an edit waiting to be saved. */
 function UnsavedMark() {

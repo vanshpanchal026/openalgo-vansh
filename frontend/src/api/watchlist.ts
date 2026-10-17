@@ -19,11 +19,16 @@ export interface WatchlistItem {
   position: number
 }
 
+export type FlagColor = 'red' | 'blue' | 'green' | 'orange' | 'purple' | 'cyan' | 'pink'
+
 export interface Watchlist {
   id: number
   name: string
   position: number
   items: WatchlistItem[]
+  is_flagged_list?: boolean
+  flag_color?: FlagColor
+  flag_hex?: string
 }
 
 interface Envelope<T> {
@@ -76,6 +81,29 @@ export const watchlistApi = {
 
   reorderItems: async (id: number, order: number[]): Promise<void> => {
     await webClient.put(`/watchlist/api/lists/${id}/items/order`, { order })
+  },
+
+  toggleFlag: async (
+    symbol: string,
+    exchange: string,
+    color?: FlagColor
+  ): Promise<{
+    symbol: string
+    exchange: string
+    flagged: boolean
+    color: FlagColor | null
+    flagged_list_id?: number
+  }> => {
+    const res = await webClient.post<
+      Envelope<{
+        symbol: string
+        exchange: string
+        flagged: boolean
+        color: FlagColor | null
+        flagged_list_id?: number
+      }>
+    >('/watchlist/api/toggle-flag', { symbol, exchange, color })
+    return res.data.data
   },
 }
 

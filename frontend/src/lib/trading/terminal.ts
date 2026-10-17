@@ -1683,7 +1683,7 @@ export class TradingTerminal {
     let m = String((e as Error)?.message || e || 'request failed')
     m = m
       .replace(/^openalgo-charts:\s*/i, '')
-      .replace(/^\/api\/v1\/[\w/]+\s+failed\s+\(\d+\)(:\s*)?/i, '')
+      .replace(/^(?:\/api\/v1\/[\w/]+|history)\s+(?:request\s+)?failed\s+\(\d+\)(:\s*)?/i, '')
     return m.trim() || 'request failed'
   }
   private toast(msg: string, kind: ToastKind = '') {
@@ -6909,6 +6909,7 @@ export class TradingTerminal {
       interval: this.interval,
       from: to - lookbackDays(this.interval) * 86400,
       to,
+      timeoutMs: 60_000,
     }
     const inner = this.cachedBars ?? this.rest
     if (!inner) return false
@@ -7144,6 +7145,7 @@ export class TradingTerminal {
         interval: this.interval,
         from: to - lookbackDays(this.interval) * 86400,
         to,
+        timeoutMs: 60_000,
       }
       bars = this.data ? await this.data.load(request) : await feed.getBars(request)
     } catch (e) {
@@ -7988,6 +7990,7 @@ export class TradingTerminal {
       pageSize: 500,
       maxEmptyPages: 4,
       maxBars: 100_000,
+      timeoutMs: 60_000,
     })
     this.offData = this.data.subscribe((snapshot) => this.applyDataSnapshot(snapshot))
     document.addEventListener('visibilitychange', this.onVisibilityChange)

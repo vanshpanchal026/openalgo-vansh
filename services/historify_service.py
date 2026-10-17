@@ -472,11 +472,12 @@ def get_chart_data(
         end_ts = None
 
         if start_date:
-            start_ts = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp())
+            s_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            start_ts = max(0, int((s_dt - datetime(1970, 1, 1)).total_seconds()))
         if end_date:
             # Add 1 day to include end date
             end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
-            end_ts = int(end_dt.timestamp())
+            end_ts = max(0, int((end_dt - datetime(1970, 1, 1)).total_seconds()))
 
         df = get_ohlcv(
             symbol=symbol,

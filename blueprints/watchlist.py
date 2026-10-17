@@ -23,9 +23,11 @@ from database.watchlist_db import (
     create_watchlist,
     delete_watchlist,
     get_watchlists,
+    is_flagged_list_name,
     remove_item,
     rename_watchlist,
     reorder_items,
+    toggle_flag,
 )
 from utils.logging import get_logger
 from utils.session import check_session_validity
@@ -216,3 +218,29 @@ def order_symbols(watchlist_id: int):
     if not reorder_items(_user(), watchlist_id, [i for i in order if isinstance(i, int)]):
         return jsonify({"status": "error", "message": "List not found"}), 404
     return jsonify({"status": "success"})
+
+
+@watchlist_bp.route("/watchlist/api/toggle-flag", methods=["POST"])
+@check_session_validity
+def toggle_symbol_flag():
+    """Toggle or switch a symbol's flag color across the 7 flagged lists."""
+    payload = request.get_json(silent=True) or {}
+    symbol = (payload.get("symbol") or "").strip()
+    exchange = (payload.get("exchange") or "").strip()
+    color = (payload.get("color") or "red").strip().lower()
+    if not symbol or not exchange:
+        return jsonify({"status": "error", "message": "symbol and exchange are required"}), 400
+
+    result = toggle_flag(_user(), symbol, exchange, color)
+    if result is None:
+        return jsonify({"status": "error", "message": "Could not toggle flag"}), 500
+
+    if result.get("flagged"):
+        try:
+            from services.watchlist_precache_service import trigger_watchlist_precache
+
+            trigger_watchlist_precache([{"symbol": symbol, "exchange": exchange}], user_id=_user())
+        except Exception as e:
+            logger.debug(f"Could not precache flagged symbol: {e}")
+
+    return jsonify({"status": "success", "data": result})

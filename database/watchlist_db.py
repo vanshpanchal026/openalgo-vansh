@@ -51,6 +51,23 @@ MAX_ITEMS_PER_LIST = 500
 #: Enough to organise by sector, strategy and expiry several times over.
 MAX_LISTS_PER_USER = 50
 
+#: 7 TradingView-style color-coded flagged lists.
+FLAG_COLORS = {
+    "red": {"name": "Red list", "color": "#ef4444", "position": -7},
+    "blue": {"name": "Blue list", "color": "#3b82f6", "position": -6},
+    "green": {"name": "Green list", "color": "#22c55e", "position": -5},
+    "orange": {"name": "Orange list", "color": "#f59e0b", "position": -4},
+    "purple": {"name": "Purple list", "color": "#a855f7", "position": -3},
+    "cyan": {"name": "Cyan list", "color": "#06b6d4", "position": -2},
+    "pink": {"name": "Pink list", "color": "#ec4899", "position": -1},
+}
+FLAG_LIST_NAMES = {cfg["name"]: color_key for color_key, cfg in FLAG_COLORS.items()}
+
+
+def is_flagged_list_name(name: str) -> bool:
+    """True if name belongs to one of the 7 system flagged lists."""
+    return bool(name and name in FLAG_LIST_NAMES)
+
 
 class Watchlist(Base):
     """One named list of instruments."""
@@ -110,7 +127,8 @@ def init_db():
 
 def _serialize(watchlist: Watchlist) -> dict:
     """One list and its instruments, in the shape the terminal consumes."""
-    return {
+    color_key = FLAG_LIST_NAMES.get(watchlist.name)
+    data = {
         "id": watchlist.id,
         "name": watchlist.name,
         "position": watchlist.position,
@@ -124,11 +142,43 @@ def _serialize(watchlist: Watchlist) -> dict:
             for item in watchlist.items
         ],
     }
+    if color_key:
+        data["is_flagged_list"] = True
+        data["flag_color"] = color_key
+        data["flag_hex"] = FLAG_COLORS[color_key]["color"]
+    return data
+
+
+def ensure_flagged_lists(user_id: str) -> None:
+    """Ensure all 7 color-coded flagged lists exist for the user."""
+    if not user_id:
+        return
+    try:
+        existing = {
+            w[0]
+            for w in db_session.query(Watchlist.name)
+            .filter_by(user_id=user_id)
+            .filter(Watchlist.name.in_(list(FLAG_LIST_NAMES.keys())))
+            .all()
+        }
+        for color_key, cfg in FLAG_COLORS.items():
+            if cfg["name"] not in existing:
+                watchlist = Watchlist(
+                    user_id=user_id,
+                    name=cfg["name"],
+                    position=cfg["position"],
+                )
+                db_session.add(watchlist)
+        db_session.commit()
+    except Exception:
+        logger.exception("Could not ensure flagged lists for %s", user_id)
+        db_session.rollback()
 
 
 def get_watchlists(user_id: str) -> list[dict]:
     """Every list for a user, ordered, each with its instruments."""
     try:
+        ensure_flagged_lists(user_id)
         rows = (
             db_session.query(Watchlist)
             .filter_by(user_id=user_id)
@@ -151,7 +201,7 @@ def create_watchlist(user_id: str, name: str, items: list[dict] | None = None) -
     silently making a second list with the same name.
     """
     name = (name or "").strip()
-    if not name:
+    if not name or is_flagged_list_name(name):
         return None
 
     try:
@@ -159,7 +209,12 @@ def create_watchlist(user_id: str, name: str, items: list[dict] | None = None) -
         if existing:
             return None
 
-        count = db_session.query(Watchlist).filter_by(user_id=user_id).count()
+        count = (
+            db_session.query(Watchlist)
+            .filter_by(user_id=user_id)
+            .filter(~Watchlist.name.in_(list(FLAG_LIST_NAMES.keys())))
+            .count()
+        )
         if count >= MAX_LISTS_PER_USER:
             logger.warning("Watchlist cap reached for %s (%d lists)", user_id, count)
             return None
@@ -190,14 +245,14 @@ def create_watchlist(user_id: str, name: str, items: list[dict] | None = None) -
 
 
 def rename_watchlist(user_id: str, watchlist_id: int, name: str) -> bool:
-    """Rename a list. False when it is missing or the name is already used."""
+    """Rename a list. False when it is missing, system list, or the name is already used."""
     name = (name or "").strip()
-    if not name:
+    if not name or is_flagged_list_name(name):
         return False
 
     try:
         watchlist = db_session.query(Watchlist).filter_by(id=watchlist_id, user_id=user_id).first()
-        if not watchlist:
+        if not watchlist or is_flagged_list_name(watchlist.name):
             return False
 
         clash = (
@@ -225,7 +280,7 @@ def delete_watchlist(user_id: str, watchlist_id: int) -> bool:
     """Remove a list and everything in it."""
     try:
         watchlist = db_session.query(Watchlist).filter_by(id=watchlist_id, user_id=user_id).first()
-        if not watchlist:
+        if not watchlist or is_flagged_list_name(watchlist.name):
             return False
         db_session.delete(watchlist)
         db_session.commit()
@@ -234,6 +289,92 @@ def delete_watchlist(user_id: str, watchlist_id: int) -> bool:
         logger.exception("Could not delete watchlist %s", watchlist_id)
         db_session.rollback()
         return False
+
+
+def toggle_flag(user_id: str, symbol: str, exchange: str, color: str = "red") -> dict | None:
+    """Toggle a symbol's flagged status across the 7 color-coded flagged lists.
+
+    - If the symbol is already in the target color list: remove it (unflag).
+    - If it is in another color list: move it to the target color list.
+    - If it is not flagged: add it to the target color list.
+
+    Returns dict with { "symbol": symbol, "exchange": exchange, "flagged": bool, "color": str | None, "flagged_list_id": int }
+    """
+    symbol = (symbol or "").strip().upper()
+    exchange = (exchange or "").strip().upper()
+    color = (color or "red").strip().lower()
+    if not symbol or not exchange:
+        return None
+    if color not in FLAG_COLORS:
+        color = "red"
+
+    target_list_name = FLAG_COLORS[color]["name"]
+
+    try:
+        ensure_flagged_lists(user_id)
+
+        flag_lists = (
+            db_session.query(Watchlist)
+            .filter_by(user_id=user_id)
+            .filter(Watchlist.name.in_(list(FLAG_LIST_NAMES.keys())))
+            .all()
+        )
+        flag_lists_by_name = {w.name: w for w in flag_lists}
+        target_list = flag_lists_by_name.get(target_list_name)
+        if not target_list:
+            return None
+
+        # Check existing flag state across all 7 lists
+        existing_list = None
+        existing_item = None
+        for w in flag_lists:
+            for item in w.items:
+                if item.symbol == symbol and item.exchange == exchange:
+                    existing_list = w
+                    existing_item = item
+                    break
+            if existing_item:
+                break
+
+        if existing_item and existing_list.id == target_list.id:
+            # Same color: toggle OFF (unflag)
+            db_session.delete(existing_item)
+            db_session.commit()
+            return {
+                "symbol": symbol,
+                "exchange": exchange,
+                "flagged": False,
+                "color": None,
+                "flagged_list_id": target_list.id,
+            }
+
+        # If it was in another color list, remove it from that list first
+        if existing_item and existing_list.id != target_list.id:
+            db_session.delete(existing_item)
+            db_session.flush()
+
+        # Add to target list
+        next_position = max((i.position for i in target_list.items), default=-1) + 1
+        new_item = WatchlistItem(
+            watchlist_id=target_list.id,
+            symbol=symbol,
+            exchange=exchange,
+            position=next_position,
+        )
+        db_session.add(new_item)
+        db_session.commit()
+
+        return {
+            "symbol": symbol,
+            "exchange": exchange,
+            "flagged": True,
+            "color": color,
+            "flagged_list_id": target_list.id,
+        }
+    except Exception:
+        logger.exception("Could not toggle flag for %s:%s (color: %s)", exchange, symbol, color)
+        db_session.rollback()
+        return None
 
 
 def clear_watchlist(user_id: str, watchlist_id: int) -> bool:

@@ -505,6 +505,44 @@ class SmartWebSocketV2:
                 logger.warning("Health check thread did not stop within timeout")
         self._health_check_thread = None
 
+    def _is_any_subscribed_market_open(self) -> bool:
+        """Check if any market for which we have active subscriptions is currently open."""
+        try:
+            from database.market_calendar_db import is_market_open
+
+            # Collect active exchange types from input_request_dict
+            subscribed_types = set()
+            for mode, ex_dict in getattr(self, "input_request_dict", {}).items():
+                if isinstance(ex_dict, dict):
+                    for ex_type, tokens in ex_dict.items():
+                        if tokens:
+                            subscribed_types.add(ex_type)
+
+            if not subscribed_types:
+                # If nothing subscribed yet, check NSE/BSE by default
+                return is_market_open("NSE") or is_market_open("BSE")
+
+            # Check if any subscribed exchange is open
+            for ex_type in subscribed_types:
+                if ex_type in (1, 2):  # NSE_CM, NSE_FO
+                    if is_market_open("NSE"):
+                        return True
+                elif ex_type in (3, 4):  # BSE_CM, BSE_FO
+                    if is_market_open("BSE"):
+                        return True
+                elif ex_type in (5, 7):  # MCX_FO, NCX_FO
+                    if is_market_open("MCX"):
+                        return True
+                elif ex_type == 13:  # CDE_FO (Currency)
+                    if is_market_open("CDS"):
+                        return True
+                else:
+                    if is_market_open():
+                        return True
+            return False
+        except Exception:
+            return True
+
     def _health_check_loop(self):
         """
         Health check loop - detects silent stalls where connection appears alive
@@ -525,6 +563,12 @@ class SmartWebSocketV2:
                 if self._last_message_time:
                     elapsed = time.time() - self._last_message_time
                     if elapsed > self.DATA_TIMEOUT:
+                        if not self._is_any_subscribed_market_open():
+                            logger.debug(
+                                f"Angel health check: no data for {elapsed:.1f}s, but subscribed markets are closed. Skipping stall reconnect."
+                            )
+                            continue
+
                         logger.error(
                             f"Angel data stall detected - no data for {elapsed:.1f}s "
                             f"(timeout: {self.DATA_TIMEOUT}s). Forcing reconnect..."

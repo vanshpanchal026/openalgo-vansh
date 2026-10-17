@@ -89,10 +89,10 @@ def _apply_rate_limit(category: str) -> None:
         now = time.time()
         earliest = _last_call_ts[category] + interval
         if now < earliest:
-            sleep_for = earliest - now
+            sleep_for = min(earliest - now, 3.0)
             # Refused before the slot is reserved, so it delays nobody behind it.
             check_queue_wait(sleep_for, "data")
-            _last_call_ts[category] = earliest
+            _last_call_ts[category] = min(earliest, now + 3.0)
         else:
             _last_call_ts[category] = now
     if sleep_for > 0:
@@ -100,18 +100,10 @@ def _apply_rate_limit(category: str) -> None:
 
 
 def _penalize_rate_limit(category: str, penalty: float) -> None:
-    """Back the WHOLE shared stream off after a broker rate-limit rejection.
-
-    Without this, a 403 only slept the failing call locally and its retry fired
-    right after the previous success — three requests landing inside one second
-    re-tripped Angel's rolling per-second window, cascading into more 403s.
-    Pushing the shared next-allowed timestamp forward spaces *every* subsequent
-    call in the category out until the pressure clears; it then self-recovers to
-    the base interval as normal calls resume.
-    """
+    """Back the WHOLE shared stream off after a broker rate-limit rejection."""
     with _rate_limit_lock:
         base = max(_last_call_ts[category], time.time())
-        _last_call_ts[category] = base + penalty
+        _last_call_ts[category] = min(base + penalty, time.time() + 5.0)
 
 
 def get_api_response(endpoint, auth, method="GET", payload="", max_retries=2):
@@ -233,6 +225,12 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, exchange)
             token = get_token(symbol, exchange)
 
+            if exchange in ("NSE", "BSE", "MCX"):
+                idx_exch = f"{exchange}_INDEX"
+                idx_token = get_token(symbol, idx_exch)
+                if idx_token and (not token or token.startswith("260") or idx_token.startswith("999")):
+                    token = idx_token
+
             if exchange == "NSE_INDEX":
                 exchange = "NSE"
             elif exchange == "BSE_INDEX":
@@ -347,6 +345,12 @@ class BrokerData:
             try:
                 br_symbol = get_br_symbol(symbol, exchange)
                 token = get_token(symbol, exchange)
+
+                if exchange in ("NSE", "BSE", "MCX"):
+                    idx_exch = f"{exchange}_INDEX"
+                    idx_token = get_token(symbol, idx_exch)
+                    if idx_token and (not token or token.startswith("260") or idx_token.startswith("999")):
+                        token = idx_token
 
                 # Track symbols that couldn't be resolved
                 if not token:
@@ -484,6 +488,12 @@ class BrokerData:
             br_symbol = get_br_symbol(symbol, exchange)
 
             token = get_token(symbol, exchange)
+            if exchange in ("NSE", "BSE", "MCX"):
+                idx_exch = f"{exchange}_INDEX"
+                idx_token = get_token(symbol, idx_exch)
+                if idx_token and (not token or token.startswith("260") or idx_token.startswith("999")):
+                    token = idx_token
+
             logger.debug(f"Debug - Broker Symbol: {br_symbol}, Token: {token}")
 
             if exchange == "NSE_INDEX":

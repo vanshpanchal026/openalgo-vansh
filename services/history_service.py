@@ -45,14 +45,14 @@ def _enforce_rate_limit(*, background: bool = False):
             slot = max(now, min(_next_history_slot, now + _MIN_HISTORY_INTERVAL))
             wait = slot - now
             check_queue_wait(wait, kind="data")
-            _next_history_slot = slot + _MIN_HISTORY_INTERVAL
+            _next_history_slot = min(slot + _MIN_HISTORY_INTERVAL, now + 3.0)
         else:
             # Background precache jobs take regular sequential slots
             slot = max(now, _next_history_slot)
             wait = slot - now
-            _next_history_slot = slot + _MIN_HISTORY_INTERVAL
+            _next_history_slot = min(slot + _MIN_HISTORY_INTERVAL, now + 10.0)
     if wait > 0:
-        time.sleep(wait)
+        time.sleep(min(wait, 3.0))
 
 
 def validate_symbol_exchange(symbol: str, exchange: str) -> tuple[bool, str | None]:
@@ -78,6 +78,11 @@ def validate_symbol_exchange(symbol: str, exchange: str) -> tuple[bool, str | No
         if exchange_upper in ("NSE", "BSE"):
             alt = "BSE" if exchange_upper == "NSE" else "NSE"
             if get_token(symbol, alt) is not None:
+                return True, None
+        # Check index exchange (e.g. NIFTY / SENSEX requested with NSE / BSE)
+        if exchange_upper in ("NSE", "BSE", "MCX"):
+            idx_exch = f"{exchange_upper}_INDEX"
+            if get_token(symbol, idx_exch) is not None:
                 return True, None
         return (
             False,
@@ -172,7 +177,29 @@ def get_history_with_auth(
         return broker_busy_result(e, f"History request for {exchange}:{symbol}")
     except Exception as e:
         logger.exception(f"Error in broker_module.get_history: {e}")
-        return False, {"status": "error", "message": str(e)}, 500
+        err_msg = str(e)
+        lowered = err_msg.lower()
+        if any(term in lowered for term in ("auth", "session", "credential", "unauthorized", "token")):
+            return (
+                False,
+                {
+                    "status": "error",
+                    "error_type": "auth_expired",
+                    "message": "Broker session expired. Please re-authenticate your broker account in Settings > Broker.",
+                },
+                401,
+            )
+        if any(term in lowered for term in ("rate limit", "exceeding", "too many requests", "429")):
+            return (
+                False,
+                {
+                    "status": "error",
+                    "error_type": "rate_limited",
+                    "message": "Broker rate limit exceeded. Please wait a moment and try again.",
+                },
+                429,
+            )
+        return False, {"status": "error", "message": err_msg}, 500
 
 
 def get_history_from_db(
@@ -213,8 +240,10 @@ def get_history_from_db(
         # Set end_date to end of day
         end_dt = end_dt.replace(hour=23, minute=59, second=59)
 
-        start_timestamp = int(start_dt.timestamp())
-        end_timestamp = int(end_dt.timestamp())
+        # Convert dates to timestamps safely across all platforms (Windows mktime
+        # raises OSError [Errno 22] on pre-1970/early-1970 local dates in IST)
+        start_timestamp = max(0, int((start_dt - datetime(1970, 1, 1)).total_seconds()))
+        end_timestamp = max(0, int((end_dt - datetime(1970, 1, 1)).total_seconds()))
 
         # Get data from DuckDB
         df = get_ohlcv(
@@ -298,6 +327,12 @@ def get_history(
     # Resolve canonical symbol and adjust exchange if needed
     from database.token_db import get_symbol_info
     sym_info = get_symbol_info(symbol, exchange)
+    if exchange.upper() in ("NSE", "BSE", "MCX"):
+        idx_info = get_symbol_info(symbol, f"{exchange.upper()}_INDEX")
+        if idx_info and (not sym_info or sym_info.token in ("26000", "26009", "26013", "26017", "26037", "26074") or (idx_info.token and idx_info.token.startswith("999"))):
+            sym_info = idx_info
+            exchange = idx_info.exchange
+            symbol = idx_info.symbol
     if sym_info:
         symbol = sym_info.symbol
         if exchange.upper() in ("NSE", "BSE") and sym_info.exchange in ("NSE", "BSE"):
@@ -342,21 +377,46 @@ def get_history(
     except BrokerBusyError as e:
         return broker_busy_result(e, f"History request for {exchange}:{symbol}")
 
+    # Bound broker start_date to realistic lookbacks so brokers (Angel One, etc.)
+    # don't split 56 years into 11 chunks and trigger chart timeouts on cache misses.
+    broker_start_date = start_date
+    try:
+        from datetime import datetime, timedelta
+        s_dt = datetime.strptime(str(start_date)[:10], "%Y-%m-%d")
+        e_dt = datetime.strptime(str(end_date)[:10], "%Y-%m-%d")
+        if interval.upper() in ("D", "W", "M"):
+            max_days = 7 * 365  # 7 years max for Daily/Weekly
+        else:
+            max_days = 60       # 60 days max for Intraday
+        earliest_allowed = e_dt - timedelta(days=max_days)
+        if s_dt < earliest_allowed:
+            broker_start_date = earliest_allowed.strftime("%Y-%m-%d")
+    except Exception:
+        broker_start_date = start_date
+
     # Case 1: API-based authentication
     if api_key and not (auth_token and broker):
         AUTH_TOKEN, FEED_TOKEN, broker_name = get_auth_token_broker(
             api_key, include_feed_token=True
         )
         if AUTH_TOKEN is None:
-            return False, {"status": "error", "message": "Invalid openalgo apikey"}, 403
+            return (
+                False,
+                {
+                    "status": "error",
+                    "error_type": "auth_expired",
+                    "message": "Invalid API key or broker session expired. Please re-authenticate your broker account in Settings > Broker.",
+                },
+                401,
+            )
         success, response_data, status_code = get_history_with_auth(
-            AUTH_TOKEN, FEED_TOKEN, broker_name, symbol, exchange, interval, start_date, end_date
+            AUTH_TOKEN, FEED_TOKEN, broker_name, symbol, exchange, interval, broker_start_date, end_date
         )
 
     # Case 2: Direct internal call with auth_token and broker
     elif auth_token and broker:
         success, response_data, status_code = get_history_with_auth(
-            auth_token, feed_token, broker, symbol, exchange, interval, start_date, end_date
+            auth_token, feed_token, broker, symbol, exchange, interval, broker_start_date, end_date
         )
 
     # Case 3: Invalid parameters
@@ -377,11 +437,11 @@ def get_history(
             logger.info(f"Primary exchange {exchange} returned no data for {symbol}. Trying fallback to {alt_exchange}...")
             if api_key and not (auth_token and broker):
                 alt_success, alt_response, alt_code = get_history_with_auth(
-                    AUTH_TOKEN, FEED_TOKEN, broker_name, symbol, alt_exchange, interval, start_date, end_date
+                    AUTH_TOKEN, FEED_TOKEN, broker_name, symbol, alt_exchange, interval, broker_start_date, end_date
                 )
             elif auth_token and broker:
                 alt_success, alt_response, alt_code = get_history_with_auth(
-                    auth_token, feed_token, broker, symbol, alt_exchange, interval, start_date, end_date
+                    auth_token, feed_token, broker, symbol, alt_exchange, interval, broker_start_date, end_date
                 )
             else:
                 alt_success = False
