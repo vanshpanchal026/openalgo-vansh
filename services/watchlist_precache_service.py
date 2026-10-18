@@ -118,7 +118,17 @@ def _precache_worker(items: list[dict], user_id: str | None = None):
                         _status["completed"] += 1
                     continue
 
-            # Download daily data (get_history with background=True enforces 3 req/sec rate limit)
+            # 1. Try public unauthenticated CDN fetch first (Zero broker API calls, zero rate limits)
+            from services.public_candle_service import fetch_public_candles
+
+            pub_ok, pub_candles, pub_err = fetch_public_candles(symbol, exchange, "D")
+            if pub_ok and pub_candles:
+                touch_lru(symbol, exchange)
+                with _precache_lock:
+                    _status["completed"] += 1
+                continue
+
+            # 2. Final Fallback: Broker API if public CDN returned no data
             success, resp, code = download_data(
                 symbol=symbol,
                 exchange=exchange,
@@ -132,21 +142,17 @@ def _precache_worker(items: list[dict], user_id: str | None = None):
                 touch_lru(symbol, exchange)
             else:
                 logger.warning(
-                    f"[Watchlist Precache] Could not download {symbol}:{exchange}: {resp.get('message', code)}"
+                    f"[Watchlist Precache] Broker fallback failed for {symbol}:{exchange}: {resp.get('message', code)}"
                 )
                 with _precache_lock:
                     _status["errors"] += 1
 
+            # Sleep only when hitting broker fallback
+            time.sleep(0.35)
         except Exception as e:
-            logger.warning(f"[Watchlist Precache] Error downloading {symbol}:{exchange}: {e}")
+            logger.warning(f"[Watchlist Precache] Error precaching {symbol}:{exchange}: {e}")
             with _precache_lock:
                 _status["errors"] += 1
-
-        with _precache_lock:
-            _status["completed"] += 1
-
-        # Pace requests to maintain ~3 req/s broker rate limit and avoid starvation
-        time.sleep(0.35)
 
     # Run 90-day LRU Eviction after precache finishes
     try:
@@ -181,6 +187,13 @@ def trigger_watchlist_precache(items: list[dict], user_id: str | None = None) ->
         if _precache_thread is not None and _precache_thread.is_alive():
             logger.info("[Watchlist Precache] Worker is already running. Skipping duplicate trigger.")
             return False
+
+        if len(items) >= 50:
+            try:
+                from services.bulk_data_seeder import trigger_bulk_seed_async
+                trigger_bulk_seed_async()
+            except Exception as e:
+                logger.debug(f"[Watchlist Precache] Bulk seed trigger skipped: {e}")
 
         _precache_thread = threading.Thread(
             target=_precache_worker,

@@ -97,6 +97,7 @@ from blueprints.react_app import (  # Import React frontend blueprint
 )
 from blueprints.sandbox import sandbox_bp  # Import the sandbox blueprint
 from blueprints.scalping import scalping_bp  # Import the Scalping terminal blueprint
+from blueprints.scanner_gateway import scanner_gateway_bp  # Import unified scanner gateway blueprint
 from blueprints.search import search_bp
 from blueprints.security import security_bp  # Import the security blueprint
 from blueprints.settings import settings_bp  # Import the settings blueprint
@@ -137,6 +138,7 @@ from database.telegram_db import get_bot_config
 from database.traffic_db import init_logs_db as ensure_traffic_logs_exists
 from database.user_db import init_db as ensure_user_tables_exists
 from database.watchlist_db import init_db as ensure_watchlist_tables_exists
+from database.scanner_meta_db import init_db as ensure_scanner_meta_tables_exists
 from database.whatsapp_db import (
     get_bot_config as get_whatsapp_bot_config,  # noqa: F401  (triggers module-level init_db)
 )
@@ -288,6 +290,7 @@ def create_app():
 
     # Exempt API endpoints from CSRF protection (they use API key authentication)
     csrf.exempt(api_v1_bp)
+    csrf.exempt(scanner_gateway_bp)
 
     # Initialize security middleware before traffic logging
     init_security_middleware(app)
@@ -334,6 +337,7 @@ def create_app():
     app.register_blueprint(ivchart_bp)  # Register IV chart blueprint
     app.register_blueprint(scalping_bp)  # Register Scalping terminal blueprint
     app.register_blueprint(watchlist_bp)  # Register charting watchlist blueprint
+    app.register_blueprint(scanner_gateway_bp)  # Register unified scanner gateway blueprint
     app.register_blueprint(alerts_bp)  # Register chart alert log blueprint
     app.register_blueprint(oitracker_bp)  # Register OI tracker blueprint
     app.register_blueprint(gamma_density_bp)  # Register Gamma Density blueprint
@@ -765,6 +769,7 @@ def setup_environment(app):
                 ("Flow DB", ensure_flow_tables_exists),
                 ("Scalping DB", ensure_scalping_tables_exists),
                 ("Watchlist DB", ensure_watchlist_tables_exists),
+                ("Scanner Meta DB", ensure_scanner_meta_tables_exists),
                 ("Alert Log DB", ensure_alert_log_tables_exists),
                 ("Leverage DB", ensure_leverage_tables_exists),
                 ("Strategy Portfolio DB", ensure_strategy_portfolio_tables_exists),
@@ -884,6 +889,19 @@ def setup_environment(app):
                 logger.debug("Historify scheduler initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Historify scheduler: {e}")
+
+            try:
+                # Unified Cross-Broker Instrument Master & Market Lakehouse Auto-Sync
+                # Syncs instrument master daily and verifies bulk EOD lakehouse is populated.
+                # Runs entirely on background daemon threads so Flask boot is never blocked.
+                from services.bulk_data_seeder import trigger_bulk_seed_async
+                from services.instrument_master_service import sync_unified_master_async
+
+                sync_unified_master_async()
+                trigger_bulk_seed_async(socketio=socketio)
+                logger.debug("Market Lakehouse auto-sync initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Market Lakehouse auto-sync: {e}")
 
             try:
                 # Multi-leg options strategies with end-to-end risk management.

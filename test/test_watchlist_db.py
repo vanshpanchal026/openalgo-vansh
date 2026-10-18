@@ -13,16 +13,20 @@ USER = "watchlist_test_user"
 OTHER = "watchlist_other_user"
 
 
+def user_watchlists(user):
+    return [w for w in wl.get_watchlists(user) if not wl.is_flagged_list_name(w["name"])]
+
+
 @pytest.fixture(autouse=True)
 def clean_slate():
     """Each test starts and ends with no lists for either test user."""
     wl.init_db()
     for user in (USER, OTHER):
-        for row in wl.get_watchlists(user):
+        for row in user_watchlists(user):
             wl.delete_watchlist(user, row["id"])
     yield
     for user in (USER, OTHER):
-        for row in wl.get_watchlists(user):
+        for row in user_watchlists(user):
             wl.delete_watchlist(user, row["id"])
 
 
@@ -31,14 +35,14 @@ def test_create_returns_the_list_and_get_reads_it_back():
 
     assert created["name"] == "Heavy Weights"
     assert created["items"] == []
-    assert [row["name"] for row in wl.get_watchlists(USER)] == ["Heavy Weights"]
+    assert [row["name"] for row in user_watchlists(USER)] == ["Heavy Weights"]
 
 
 def test_duplicate_name_is_refused_rather_than_silently_creating_a_second():
     wl.create_watchlist(USER, "Heavy Weights")
 
     assert wl.create_watchlist(USER, "Heavy Weights") is None
-    assert len(wl.get_watchlists(USER)) == 1
+    assert len(user_watchlists(USER)) == 1
 
 
 def test_the_same_name_is_free_for_a_different_user():
@@ -71,7 +75,7 @@ def test_adding_the_same_instrument_twice_is_a_no_op_not_an_error():
     # rather than failing.
     assert second is not None
     assert second["id"] == first["id"]
-    assert len(wl.get_watchlists(USER)[0]["items"]) == 1
+    assert len(user_watchlists(USER)[0]["items"]) == 1
 
 
 def test_positions_survive_a_deletion_in_the_middle():
@@ -79,28 +83,28 @@ def test_positions_survive_a_deletion_in_the_middle():
     for symbol in ("A", "B", "C"):
         wl.add_item(USER, lst["id"], symbol, "NSE")
 
-    items = wl.get_watchlists(USER)[0]["items"]
+    items = user_watchlists(USER)[0]["items"]
     wl.remove_item(USER, lst["id"], items[1]["id"])
     added = wl.add_item(USER, lst["id"], "D", "NSE")
 
     # max()+1, not len(): a deletion leaves a gap, so the count is not the next
     # free slot and reusing it would collide with C.
     assert added["position"] == 3
-    assert [i["symbol"] for i in wl.get_watchlists(USER)[0]["items"]] == ["A", "C", "D"]
+    assert [i["symbol"] for i in user_watchlists(USER)[0]["items"]] == ["A", "C", "D"]
 
 
 def test_reorder_moves_the_named_items_and_keeps_the_rest():
     lst = wl.create_watchlist(USER, "Order")
     for symbol in ("A", "B", "C"):
         wl.add_item(USER, lst["id"], symbol, "NSE")
-    items = {i["symbol"]: i["id"] for i in wl.get_watchlists(USER)[0]["items"]}
+    items = {i["symbol"]: i["id"] for i in user_watchlists(USER)[0]["items"]}
 
     # Only two of three named, as a reorder computed against a stale view would be.
     wl.reorder_items(USER, lst["id"], [items["C"], items["A"]])
 
     # The omitted item keeps a stable place after the ones that were sent,
     # rather than being dropped from the list.
-    assert [i["symbol"] for i in wl.get_watchlists(USER)[0]["items"]] == ["C", "A", "B"]
+    assert [i["symbol"] for i in user_watchlists(USER)[0]["items"]] == ["C", "A", "B"]
 
 
 def test_reorder_ignores_ids_from_another_list():
@@ -110,7 +114,7 @@ def test_reorder_ignores_ids_from_another_list():
     stranger = wl.add_item(USER, second["id"], "B", "NSE")
 
     assert wl.reorder_items(USER, first["id"], [stranger["id"]]) is True
-    assert [i["symbol"] for i in wl.get_watchlists(USER)[0]["items"]] == ["A"]
+    assert [i["symbol"] for i in user_watchlists(USER)[0]["items"]] == ["A"]
 
 
 def test_clear_empties_the_list_but_keeps_it():
@@ -118,7 +122,7 @@ def test_clear_empties_the_list_but_keeps_it():
     wl.add_item(USER, lst["id"], "A", "NSE")
 
     assert wl.clear_watchlist(USER, lst["id"]) is True
-    assert wl.get_watchlists(USER)[0]["items"] == []
+    assert user_watchlists(USER)[0]["items"] == []
 
 
 def test_delete_takes_the_items_with_it():
@@ -126,7 +130,7 @@ def test_delete_takes_the_items_with_it():
     wl.add_item(USER, lst["id"], "A", "NSE")
 
     assert wl.delete_watchlist(USER, lst["id"]) is True
-    assert wl.get_watchlists(USER) == []
+    assert user_watchlists(USER) == []
     # The rows went with the parent rather than being orphaned.
     assert (
         wl.db_session.query(wl.WatchlistItem).filter_by(watchlist_id=lst["id"]).count() == 0

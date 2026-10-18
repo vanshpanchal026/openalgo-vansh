@@ -743,6 +743,19 @@ class AngelWebSocketAdapter(BaseBrokerWebSocketAdapter):
             # Publish to ZeroMQ
             self.publish_market_data(topic, market_data)
 
+            # Feed into live candle aggregator for zero-broker-call real-time charting
+            try:
+                from services.live_candle_aggregator import live_aggregator
+                ltp_val = market_data.get("ltp", 0.0)
+                if ltp_val > 0:
+                    vol_val = market_data.get("volume", 0)
+                    epoch_s = market_data.get("ltt", 0)
+                    if epoch_s and epoch_s > 10000000000:
+                        epoch_s = int(epoch_s / 1000)
+                    live_aggregator.on_tick(symbol, exchange, ltp_val, vol_val, epoch_s)
+            except Exception:
+                pass
+
         except Exception as e:
             self.logger.error(f"Error processing market data: {e}", exc_info=True)
 

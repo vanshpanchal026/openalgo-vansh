@@ -980,6 +980,7 @@ function TradingWorkspace({ account }: { account: string | null }) {
           return
         }
         setApiKey(keyRes.api_key)
+        useAuthStore.getState().setApiKey(keyRes.api_key)
         setWsUrl(cfgRes.websocket_url || 'ws://127.0.0.1:8765')
       } catch {
         if (alive) setNoApiKey(true)

@@ -1,0 +1,405 @@
+{
+  "name": "IPO 2026 (Mainboard 100)",
+  "items": [
+    {
+      "symbol": "VNL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "NITYAS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SHAHINVEST",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SRIT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "RUNWALENTR",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "GERMAN",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ORIENTCABL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ACEVECTOR",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "AONESTEELS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MONEYVIEW",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ARMEE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SWASTIKAIN",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ELEVATE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ADROITIND",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "VARMORA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SONA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "NSE",
+      "exchange": "BSE"
+    },
+    {
+      "symbol": "HEROMOTORS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "JSIPL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SSRETAIL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MANIKA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "VEEGALAND",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "KARAMTARA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "LCCPROJECT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ARCIL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MPIMANIPAL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "STEAMHOUSE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "RENTOMOJO",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "PRASOLCHEM",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "GLASSWALL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "KANOHAR",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "PRANAV",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "DEEPA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MOMSBELIEF",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "PERNIASPOP",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ESDS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "PRIORITY",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "LUMINO",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ANNU",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SKYWAYS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "HTEL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SYMBIOTEC",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "AUGMONT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "TEMPSENS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "GAJA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SUNSHINE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SHANKESH",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "LALITHAA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "HORIZONIND",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "BLEL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SHIPROCKET",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MILKYMIST",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MOLBIO",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "DHOOTTRANS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "TECHNOCRAF",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "LEAPIND",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ARDEE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "JNPR",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MVELECTRO",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "MANIPALHOS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CUBEINVIT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "LCL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "XTRANET",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "INDOMIM",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CMLL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "ALPINETEX",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SBIFUNDS",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "LASERPOWER",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "KUSUMGAR",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "KNACK",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "AASTHA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CSM",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CORDELIA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "RAMBHAJO",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "TURTLEMINT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "HEXAGON",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CMRGREEN",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "BAGMANE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "KISSHT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CITIUSINVT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "OMPOWER",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "AEROPLANE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "POWERICA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SAIPARENT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CMPDI",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "GSPCROP",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "RIIT",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "INNOVISION",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "RSL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SEDEMAC",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "OMNI",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "PNGSREVA",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SRTL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "CLEANMAX",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "GAUDIUMIVF",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "AYE",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "FRACTAL",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "SHADOWFAX",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "AMAGI",
+      "exchange": "NSE"
+    },
+    {
+      "symbol": "BHARATCOAL",
+      "exchange": "NSE"
+    }
+  ]
+}

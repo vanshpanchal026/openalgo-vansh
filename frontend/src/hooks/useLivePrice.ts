@@ -24,6 +24,8 @@ export interface PriceableItem {
  * Configuration options for useLivePrice hook
  */
 export interface UseLivePriceOptions {
+  /** Optional OpenAlgo API key for quote lookups if not set in auth store */
+  apiKey?: string
   /** Whether the hook is enabled (default: true) */
   enabled?: boolean
   /** Time in ms after which WebSocket data is considered stale (default: 5000) */
@@ -81,6 +83,7 @@ export function useLivePrice<T extends PriceableItem>(
   options: UseLivePriceOptions = {}
 ): UseLivePriceResult<T> {
   const {
+    apiKey: customApiKey,
     enabled = true,
     staleThreshold = 5000,
     useMultiQuotesFallback = true,
@@ -88,7 +91,8 @@ export function useLivePrice<T extends PriceableItem>(
     pauseWhenHidden = true,
   } = options
 
-  const { apiKey } = useAuthStore()
+  const { apiKey: storeApiKey } = useAuthStore()
+  const apiKey = customApiKey || storeApiKey
   const { isMarketOpen, isAnyMarketOpen } = useMarketStatus()
   const { isVisible, wasHidden, timeSinceHidden } = usePageVisibility()
   const anyMarketOpen = isAnyMarketOpen()

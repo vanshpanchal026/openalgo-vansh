@@ -40,7 +40,8 @@ tmp/
 *.jsonl
 *.tmp
 checkpoint.txt
-checkpoints.json
+*.parquet
+db/lakehouse/
 log/ws_proxy_stats.json
 log/test/
 

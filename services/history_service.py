@@ -202,6 +202,46 @@ def get_history_with_auth(
         return False, {"status": "error", "message": err_msg}, 500
 
 
+def _merge_live_forming_bar(
+    records: list[dict[str, Any]],
+    symbol: str,
+    exchange: str,
+    interval: str,
+) -> list[dict[str, Any]]:
+    """
+    If a real-time forming bar exists in memory for this symbol/exchange/interval,
+    merge or append it to the end of the records list.
+    """
+    try:
+        from services.live_candle_aggregator import live_aggregator
+
+        forming = live_aggregator.get_forming_candle(symbol, exchange, interval)
+        if not forming:
+            return records
+
+        forming_ts = forming["timestamp"]
+        if not records:
+            return [forming]
+
+        last_record = records[-1]
+        last_ts = last_record.get("timestamp")
+
+        if last_ts == forming_ts:
+            # Update the last bar with latest forming data
+            last_record["high"] = max(last_record.get("high", forming["high"]), forming["high"])
+            last_record["low"] = min(last_record.get("low", forming["low"]), forming["low"])
+            last_record["close"] = forming["close"]
+            if forming.get("volume", 0) > 0:
+                last_record["volume"] = max(last_record.get("volume", 0), forming["volume"])
+        elif last_ts is not None and last_ts < forming_ts:
+            # Append new forming bar
+            records.append(forming)
+    except Exception as e:
+        logger.debug(f"[HistoryService] Error merging forming bar: {e}")
+
+    return records
+
+
 def get_history_from_db(
     symbol: str, exchange: str, interval: str, start_date: str, end_date: str
 ) -> tuple[bool, dict[str, Any], int]:
@@ -272,7 +312,10 @@ def get_history_from_db(
         columns = ["timestamp", "open", "high", "low", "close", "volume", "oi"]
         df = df[columns]
 
-        return True, {"status": "success", "data": df.to_dict(orient="records")}, 200
+        records = df.to_dict(orient="records")
+        records = _merge_live_forming_bar(records, symbol, exchange, interval)
+
+        return True, {"status": "success", "data": records}, 200
 
     except Exception as e:
         logger.exception(f"Error fetching history from DB: {e}")
@@ -350,7 +393,7 @@ def get_history(
         )
 
     # Source: 'api' (default) - Fetch from broker API
-    # Cache-first check for interactive chart requests:
+    # 1. Cache-first check for interactive chart requests:
     if not background:
         db_success, db_resp, _ = get_history_from_db(
             symbol=symbol,
@@ -368,7 +411,35 @@ def get_history(
                 pass
             return True, db_resp, 200
 
-    # Enforce 3 requests/second rate limit for broker history calls
+    # 2. Keyless Public CDN check (Upstox public endpoint - zero auth required)
+    try:
+        from services.public_candle_service import fetch_public_candles
+
+        pub_success, pub_candles, pub_err = fetch_public_candles(
+            symbol=symbol,
+            exchange=exchange,
+            interval=interval,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if pub_success and pub_candles:
+            # Query back from DuckDB so that on-the-fly SQL aggregation (5m, 15m, 1h, W, M) is applied
+            db_success, db_resp, _ = get_history_from_db(
+                symbol=symbol,
+                exchange=exchange,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if db_success and db_resp.get("data"):
+                return True, db_resp, 200
+            # If storage interval, return raw formatted candles
+            pub_candles = _merge_live_forming_bar(pub_candles, symbol, exchange, interval)
+            return True, {"status": "success", "data": pub_candles}, 200
+    except Exception as e:
+        logger.debug(f"[HistoryService] Public keyless candle fetch skipped/failed for {symbol}: {e}")
+
+    # 3. Final Fallback: Broker API with strict rate limiting and isolated queue
     try:
         if background:
             _enforce_rate_limit(background=True)

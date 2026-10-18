@@ -329,6 +329,28 @@ def init_database():
             )
         """)
 
+        # Unified Cross-Broker Instrument & Token Master
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS instrument_master (
+                clean_symbol VARCHAR NOT NULL,
+                display_symbol VARCHAR NOT NULL,
+                exchange VARCHAR NOT NULL,
+                series VARCHAR,
+                isin VARCHAR,
+                angel_token VARCHAR,
+                angel_symbol VARCHAR,
+                upstox_key VARCHAR,
+                lot_size INTEGER,
+                tick_size DOUBLE,
+                last_updated TIMESTAMP DEFAULT current_timestamp,
+                PRIMARY KEY (exchange, display_symbol)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_inst_master_clean
+            ON instrument_master (exchange, clean_symbol)
+        """)
+
         # Scheduler Tables
         # Schedule configurations
         conn.execute("""
@@ -679,6 +701,11 @@ def upsert_market_data(df: pd.DataFrame, symbol: str, exchange: str, interval: s
         if df["timestamp"].dtype != "int64":
             df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**9
 
+        if interval == "D":
+            # Normalize daily timestamps to IST midnight (epoch of YYYY-MM-DD 00:00:00+05:30)
+            df["timestamp"] = ((df["timestamp"] + 19800) // 86400) * 86400 - 19800
+            df = df.drop_duplicates(subset=["timestamp"], keep="last")
+
         # Select only required columns in correct order
         df = df[
             [
@@ -996,6 +1023,11 @@ def get_ohlcv(
 
         with get_connection() as conn:
             result = conn.execute(query, params).fetchdf()
+
+        if interval == "D" and not result.empty:
+            # Defensive deduplication: ensure at most one candle per calendar date in IST
+            result["_day"] = (result["timestamp"] + 19800) // 86400
+            result = result.drop_duplicates(subset=["_day"], keep="last").drop(columns=["_day"])
 
         return result
 
@@ -2432,6 +2464,122 @@ def get_catalog_grouped(group_by: str = "underlying") -> dict[str, list[dict[str
     except Exception as e:
         logger.exception(f"Error grouping catalog: {e}")
         return {}
+
+
+# =============================================================================
+# Unified Instrument Master Operations (NSE, BSE, SME, Indices)
+# =============================================================================
+
+
+@_serialized_write
+def upsert_instrument_master_df(df: pd.DataFrame) -> int:
+    """
+    Bulk insert or replace records into instrument_master table.
+    Expects columns: clean_symbol, display_symbol, exchange, series, isin,
+                     angel_token, angel_symbol, upstox_key, lot_size, tick_size
+    """
+    if df.empty:
+        return 0
+    try:
+        with get_connection() as conn:
+            conn.register("temp_inst_master", df)
+            conn.execute("""
+                INSERT OR REPLACE INTO instrument_master (
+                    clean_symbol, display_symbol, exchange, series, isin,
+                    angel_token, angel_symbol, upstox_key, lot_size, tick_size, last_updated
+                )
+                SELECT
+                    clean_symbol, display_symbol, exchange, series, isin,
+                    angel_token, angel_symbol, upstox_key,
+                    TRY_CAST(lot_size AS INTEGER), TRY_CAST(tick_size AS DOUBLE),
+                    current_timestamp
+                FROM temp_inst_master;
+            """)
+            conn.unregister("temp_inst_master")
+        return len(df)
+    except Exception as e:
+        logger.exception(f"Error upserting instrument master: {e}")
+        return 0
+
+
+def resolve_instrument_keys(symbol: str, exchange: str = "NSE") -> dict[str, Any] | None:
+    """
+    Resolves human-readable or broker symbols (e.g., 'RELIANCE', 'RELIANCE-EQ', 'APS-SM', 'NIFTY')
+    into canonical ISIN, Angel token, and Upstox key.
+    """
+    if not symbol:
+        return None
+    raw = symbol.upper().strip()
+    clean = raw
+    for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-ST", "-A", "-B"):
+        if clean.endswith(suffix):
+            clean = clean[: -len(suffix)]
+            break
+
+    exch = exchange.upper().strip()
+    # Normalize index exchanges
+    lookup_exch = exch
+    if exch in ("NSE_INDEX", "BSE_INDEX", "MCX_INDEX"):
+        lookup_exch = exch.replace("_INDEX", "")
+
+    try:
+        with get_connection() as conn:
+            # First attempt: direct match on exchange
+            row = conn.execute("""
+                SELECT clean_symbol, display_symbol, exchange, series, isin,
+                       angel_token, angel_symbol, upstox_key, lot_size, tick_size
+                FROM instrument_master
+                WHERE exchange = ?
+                  AND (UPPER(display_symbol) = ? OR UPPER(clean_symbol) = ?)
+                ORDER BY CASE series
+                    WHEN 'INDEX' THEN 1
+                    WHEN 'EQ' THEN 2
+                    WHEN 'SM' THEN 3
+                    WHEN 'ST' THEN 4
+                    ELSE 5
+                END
+                LIMIT 1;
+            """, [lookup_exch, raw, clean]).fetchone()
+
+            # Second attempt: check across other cash exchange (NSE <-> BSE)
+            if not row and lookup_exch in ("NSE", "BSE"):
+                alt_exch = "BSE" if lookup_exch == "NSE" else "NSE"
+                row = conn.execute("""
+                    SELECT clean_symbol, display_symbol, exchange, series, isin,
+                           angel_token, angel_symbol, upstox_key, lot_size, tick_size
+                    FROM instrument_master
+                    WHERE exchange = ?
+                      AND (UPPER(display_symbol) = ? OR UPPER(clean_symbol) = ?)
+                    ORDER BY CASE series
+                        WHEN 'INDEX' THEN 1
+                        WHEN 'EQ' THEN 2
+                        WHEN 'SM' THEN 3
+                        ELSE 4
+                    END
+                    LIMIT 1;
+                """, [alt_exch, raw, clean]).fetchone()
+
+            if not row:
+                return None
+
+            cols = [
+                "clean_symbol", "display_symbol", "exchange", "series", "isin",
+                "angel_token", "angel_symbol", "upstox_key", "lot_size", "tick_size"
+            ]
+            return dict(zip(cols, row))
+    except Exception as e:
+        logger.exception(f"Error resolving instrument keys for {symbol}:{exchange}: {e}")
+        return None
+
+
+def get_instrument_count() -> int:
+    """Return total number of resolved instruments in instrument_master."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM instrument_master;").fetchone()
+            return row[0] if row else 0
+    except Exception:
+        return 0
 
 
 # =============================================================================

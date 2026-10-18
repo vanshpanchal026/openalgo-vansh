@@ -13,6 +13,10 @@
  */
 
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
   ChevronDown,
   Flag,
   GripVertical,
@@ -189,6 +193,113 @@ function readDisplay(): Display {
   } catch {
     return DISPLAY_DEFAULT
   }
+}
+
+export type WatchlistSortField =
+  | 'default'
+  | 'symbol'
+  | 'last'
+  | 'change'
+  | 'changePercent'
+  | 'volume'
+  | 'high'
+  | 'low'
+  | 'open'
+
+export type WatchlistSortDirection = 'asc' | 'desc'
+
+export interface WatchlistSortConfig {
+  field: WatchlistSortField
+  direction: WatchlistSortDirection
+}
+
+const SORT_KEY = 'oa-trading-watchlist-sort'
+const SORT_DEFAULT: WatchlistSortConfig = {
+  field: 'default',
+  direction: 'asc',
+}
+
+function readSort(): WatchlistSortConfig {
+  try {
+    const raw = localStorage.getItem(SORT_KEY)
+    if (!raw) return SORT_DEFAULT
+    const parsed = JSON.parse(raw) as Partial<WatchlistSortConfig>
+    const validFields: WatchlistSortField[] = [
+      'default',
+      'symbol',
+      'last',
+      'change',
+      'changePercent',
+      'volume',
+      'high',
+      'low',
+      'open',
+    ]
+    if (parsed.field && validFields.includes(parsed.field)) {
+      return {
+        field: parsed.field,
+        direction: parsed.direction === 'desc' ? 'desc' : 'asc',
+      }
+    }
+    return SORT_DEFAULT
+  } catch {
+    return SORT_DEFAULT
+  }
+}
+
+function compareWatchlistItems(
+  a: WatchlistItem,
+  b: WatchlistItem,
+  field: WatchlistSortField,
+  direction: WatchlistSortDirection,
+  quotes: Record<string, Quote>
+): number {
+  if (field === 'symbol') {
+    const res = a.symbol.localeCompare(b.symbol)
+    return direction === 'asc' ? res : -res
+  }
+
+  const keyA = `${a.exchange}:${a.symbol}`
+  const keyB = `${b.exchange}:${b.symbol}`
+  const qa = quotes[keyA]
+  const qb = quotes[keyB]
+
+  let va: number | null | undefined
+  let vb: number | null | undefined
+
+  if (field === 'last') {
+    va = qa?.ltp
+    vb = qb?.ltp
+  } else if (field === 'change') {
+    va = qa?.change
+    vb = qb?.change
+  } else if (field === 'changePercent') {
+    va = qa?.changePercent
+    vb = qb?.changePercent
+  } else if (field === 'volume') {
+    va = qa?.volume
+    vb = qb?.volume
+  } else if (field === 'high') {
+    va = qa?.high
+    vb = qb?.high
+  } else if (field === 'low') {
+    va = qa?.low
+    vb = qb?.low
+  } else if (field === 'open') {
+    va = qa?.open
+    vb = qb?.open
+  }
+
+  const hasA = typeof va === 'number' && Number.isFinite(va)
+  const hasB = typeof vb === 'number' && Number.isFinite(vb)
+
+  // Items without quote data always go to the bottom regardless of sort direction
+  if (!hasA && !hasB) return 0
+  if (!hasA) return 1
+  if (!hasB) return -1
+
+  const diff = (va as number) - (vb as number)
+  return direction === 'asc' ? diff : -diff
 }
 
 /**
@@ -536,10 +647,6 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
   const items = useMemo(() => active?.items ?? [], [active])
 
   useEffect(() => {
-    onItemsChange?.(items)
-  }, [items, onItemsChange])
-
-  useEffect(() => {
     if (!activeSymbol) return
     const el = rowRefs.current[activeSymbol]
     if (el) {
@@ -563,6 +670,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
     isFallbackMode,
     isAnyMarketOpen,
   } = useLivePrice(priceable, {
+    apiKey,
     enabled: priceable.length > 0,
     useMultiQuotesFallback: true,
     multiQuotesRefreshInterval: SNAPSHOT_REFRESH_MS,
@@ -595,9 +703,12 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
       const ltp = row.ltp ?? snapshot?.ltp
       if (typeof ltp !== 'number' || ltp === 0) continue
 
-      const prevClose = needsPreviousClose(snapshot?.prev_close, ltp)
-        ? resolvedCloses[key]
-        : snapshot?.prev_close
+      const prevClose =
+        resolvedCloses[key] && resolvedCloses[key] > 0
+          ? resolvedCloses[key]
+          : typeof snapshot?.prev_close === 'number' && snapshot.prev_close > 0
+            ? snapshot.prev_close
+            : undefined
       const known = typeof prevClose === 'number' && prevClose > 0
       next[key] = {
         ltp,
@@ -611,6 +722,36 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
     }
     return next
   }, [priced, multiQuotes, resolvedCloses])
+
+  const [sortConfig, setSortConfig] = useState<WatchlistSortConfig>(readSort)
+  useEffect(() => {
+    localStorage.setItem(SORT_KEY, JSON.stringify(sortConfig))
+  }, [sortConfig])
+
+  // Stable sorted items based on active sort selection and real-time quotes
+  const sortedItems = useMemo(() => {
+    if (sortConfig.field === 'default') return items
+    const list = [...items]
+    list.sort((a, b) => compareWatchlistItems(a, b, sortConfig.field, sortConfig.direction, quotes))
+    return list
+  }, [items, sortConfig, quotes])
+
+  useEffect(() => {
+    onItemsChange?.(sortedItems)
+  }, [sortedItems, onItemsChange])
+
+  const handleHeaderSort = (field: WatchlistSortField) => {
+    setSortConfig((prev) => {
+      if (prev.field !== field) {
+        const direction: WatchlistSortDirection = field === 'symbol' ? 'asc' : 'desc'
+        return { field, direction }
+      }
+      if (prev.direction === (field === 'symbol' ? 'asc' : 'desc')) {
+        return { field, direction: (field === 'symbol' ? 'desc' : 'asc') }
+      }
+      return { field: 'default', direction: 'asc' }
+    })
+  }
 
   // One request per instrument per trading day, and only for the ones that
   // need it, so a broker whose quote already carries a real previous close
@@ -968,6 +1109,122 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
           <Plus className="h-4 w-4" />
         </Button>
 
+        {/* Sort by dropdown */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'h-8 w-8 shrink-0',
+                sortConfig.field !== 'default' && 'text-primary font-semibold'
+              )}
+              title={
+                sortConfig.field === 'default'
+                  ? 'Sort watchlist'
+                  : `Sorted by ${sortConfig.field} (${sortConfig.direction})`
+              }
+              aria-label="Sort watchlist"
+            >
+              <ArrowUpDown className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-60">
+            <DropdownMenuLabel className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              Sort by
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'default', direction: 'asc' })}
+            >
+              <span>Default (Original order)</span>
+              {sortConfig.field === 'default' && <Check className="h-3.5 w-3.5 text-primary" />}
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              Performance
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'changePercent', direction: 'desc' })}
+            >
+              <span>% Change: High to Low (Gainers)</span>
+              {sortConfig.field === 'changePercent' && sortConfig.direction === 'desc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'changePercent', direction: 'asc' })}
+            >
+              <span>% Change: Low to High (Losers)</span>
+              {sortConfig.field === 'changePercent' && sortConfig.direction === 'asc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'change', direction: 'desc' })}
+            >
+              <span>Price Change: High to Low</span>
+              {sortConfig.field === 'change' && sortConfig.direction === 'desc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'change', direction: 'asc' })}
+            >
+              <span>Price Change: Low to High</span>
+              {sortConfig.field === 'change' && sortConfig.direction === 'asc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              Price & Symbol
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'last', direction: 'desc' })}
+            >
+              <span>Price (LTP): High to Low</span>
+              {sortConfig.field === 'last' && sortConfig.direction === 'desc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'last', direction: 'asc' })}
+            >
+              <span>Price (LTP): Low to High</span>
+              {sortConfig.field === 'last' && sortConfig.direction === 'asc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'symbol', direction: 'asc' })}
+            >
+              <span>Symbol: A → Z</span>
+              {sortConfig.field === 'symbol' && sortConfig.direction === 'asc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between text-[12px]"
+              onSelect={() => setSortConfig({ field: 'symbol', direction: 'desc' })}
+            >
+              <span>Symbol: Z → A</span>
+              {sortConfig.field === 'symbol' && sortConfig.direction === 'desc' && (
+                <Check className="h-3.5 w-3.5 text-primary" />
+              )}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
         {/* What the rows show. Separate from the list menu beside it: that
             one acts on the list, this one only changes how it is drawn. */}
         <DropdownMenu>
@@ -1032,14 +1289,41 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
 
       {/* Column header, built from the same selection as the rows below */}
       <div
-        className="grid shrink-0 gap-x-1.5 border-b px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70"
+        className="grid shrink-0 select-none gap-x-1.5 border-b px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70"
         style={{ gridTemplateColumns: gridTemplate }}
       >
-        <span>Symbol</span>
+        <button
+          type="button"
+          onClick={() => handleHeaderSort('symbol')}
+          className="flex items-center gap-1 text-left font-medium hover:text-foreground focus-visible:outline-none"
+          title="Click to sort by symbol"
+        >
+          <span>Symbol</span>
+          {sortConfig.field === 'symbol' && (
+            sortConfig.direction === 'asc' ? (
+              <ArrowUp className="h-2.5 w-2.5 text-primary" />
+            ) : (
+              <ArrowDown className="h-2.5 w-2.5 text-primary" />
+            )
+          )}
+        </button>
         {shownColumns.map((column) => (
-          <span key={column.id} className="text-right">
-            {column.label}
-          </span>
+          <button
+            key={column.id}
+            type="button"
+            onClick={() => handleHeaderSort(column.id as WatchlistSortField)}
+            className="flex items-center justify-end gap-1 text-right font-medium hover:text-foreground focus-visible:outline-none"
+            title={`Click to sort by ${column.label}`}
+          >
+            <span>{column.label}</span>
+            {sortConfig.field === column.id && (
+              sortConfig.direction === 'asc' ? (
+                <ArrowUp className="h-2.5 w-2.5 text-primary" />
+              ) : (
+                <ArrowDown className="h-2.5 w-2.5 text-primary" />
+              )
+            )}
+          </button>
         ))}
         <span />
       </div>
@@ -1086,7 +1370,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
             )}
           </div>
         ) : (
-          items.map((item, index) => {
+          sortedItems.map((item, index) => {
             const key = `${item.exchange}:${item.symbol}`
             const quote = quotes[key]
             // Three states, not two: no previous close means no direction.
@@ -1096,7 +1380,7 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
             // dropOn splices out then re-inserts at the target index, so a
             // downward drag lands BELOW the row it was dropped on; drawing
             // the line above it both times told the user the wrong thing.
-            const dropBelow = dragId != null && items.findIndex((i) => i.id === dragId) < index
+            const dropBelow = dragId != null && sortedItems.findIndex((i) => i.id === dragId) < index
             return (
               <div
                 key={item.id}
@@ -1105,8 +1389,9 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
                   rowRefs.current[key] = el
                   rowRefs.current[item.symbol] = el
                 }}
-                draggable
+                draggable={sortConfig.field === 'default'}
                 onDragStart={(e) => {
+                  if (sortConfig.field !== 'default') return
                   // Firefox refuses to begin a drag unless dataTransfer carries
                   // something, so this is what makes reordering work there.
                   e.dataTransfer.effectAllowed = 'move'
@@ -1114,12 +1399,16 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
                   setDragId(item.id)
                 }}
                 onDragOver={(e) => {
+                  if (sortConfig.field !== 'default') return
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'move'
                   setOverId(item.id)
                 }}
                 onDragLeave={() => setOverId((id) => (id === item.id ? null : id))}
-                onDrop={() => void dropOn(item.id)}
+                onDrop={() => {
+                  if (sortConfig.field !== 'default') return
+                  void dropOn(item.id)
+                }}
                 onDragEnd={() => {
                   setDragId(null)
                   setOverId(null)
@@ -1194,7 +1483,9 @@ export function WatchlistPanel({ apiKey, onPick, search, activeSymbol, onItemsCh
 
                 {/* Out of flow: at rest the grip costs the symbol column no
                     width at all, which is the column under the most pressure. */}
-                <GripVertical className="pointer-events-none absolute left-0 top-1/2 h-3 w-3 -translate-y-1/2 text-transparent transition-colors group-hover:text-muted-foreground/50" />
+                {sortConfig.field === 'default' && (
+                  <GripVertical className="pointer-events-none absolute left-0 top-1/2 h-3 w-3 -translate-y-1/2 text-transparent transition-colors group-hover:text-muted-foreground/50" />
+                )}
 
                 <span className="relative flex min-w-0 items-center gap-1.5">
                   <FlagPopover
