@@ -160,3 +160,57 @@ def test_install_is_idempotent():
     first = Iterator.chunk_parser
     assert litellm_tool_args.install()
     assert Iterator.chunk_parser is first
+
+
+def test_sanitize_tool_definitions_strips_framework_extras():
+    dirty_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_quote",
+                "description": "Get quote",
+                "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}},
+                "strict": True,
+                "requires_confirmation": False,
+                "external_execution": False,
+                "approval_type": None,
+            },
+        },
+        {"type": "other", "data": 123},
+    ]
+
+    cleaned = litellm_tool_args.sanitize_tool_definitions(dirty_tools)
+
+    assert len(cleaned) == 2
+    fn = cleaned[0]["function"]
+    assert set(fn.keys()) == {"name", "description", "parameters", "strict"}
+    assert fn["name"] == "get_quote"
+    assert fn["strict"] is True
+    assert "requires_confirmation" not in fn
+    assert "external_execution" not in fn
+    assert cleaned[1] == {"type": "other", "data": 123}
+
+
+def test_litellm_format_tools_sanitizes_agno_function():
+    from agno.models.litellm.chat import LiteLLM
+    from agno.tools.function import Function
+
+    litellm_tool_args.install()
+
+    fn = Function(
+        name="test_fn",
+        entrypoint=lambda: "ok",
+        description="test function",
+        requires_confirmation=False,
+        external_execution=False,
+    )
+    model = LiteLLM(id="openai/gpt-4o")
+    formatted = model._format_tools([fn])
+
+    assert len(formatted) == 1
+    func_dict = formatted[0]["function"]
+    assert "requires_confirmation" not in func_dict
+    assert "external_execution" not in func_dict
+    assert func_dict["name"] == "test_fn"
+    assert func_dict["description"] == "test function"
+

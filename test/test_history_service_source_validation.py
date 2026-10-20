@@ -18,7 +18,10 @@ def _history_request() -> dict:
 
 def test_api_source_calls_api_provider(monkeypatch):
     provider_calls = []
-    monkeypatch.setattr(history_service, "_enforce_rate_limit", lambda: None)
+    import services.public_candle_service
+    monkeypatch.setattr(history_service, "_enforce_rate_limit", lambda **kwargs: None)
+    monkeypatch.setattr(history_service, "get_history_from_db", lambda *args, **kwargs: (False, {}, 404))
+    monkeypatch.setattr(services.public_candle_service, "fetch_public_candles", lambda *args, **kwargs: (False, [], "mocked"))
     monkeypatch.setattr(
         history_service,
         "get_history_with_auth",
@@ -43,7 +46,10 @@ def test_api_source_calls_api_provider(monkeypatch):
 
 
 def test_default_source_calls_api_provider(monkeypatch):
-    monkeypatch.setattr(history_service, "_enforce_rate_limit", lambda: None)
+    import services.public_candle_service
+    monkeypatch.setattr(history_service, "_enforce_rate_limit", lambda **kwargs: None)
+    monkeypatch.setattr(history_service, "get_history_from_db", lambda *args, **kwargs: (False, {}, 404))
+    monkeypatch.setattr(services.public_candle_service, "fetch_public_candles", lambda *args, **kwargs: (False, [], "mocked"))
     monkeypatch.setattr(
         history_service,
         "get_history_with_auth",

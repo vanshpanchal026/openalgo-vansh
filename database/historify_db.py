@@ -38,7 +38,9 @@ HISTORIFY_DB_PATH = os.getenv("HISTORIFY_DATABASE_PATH", "db/historify.duckdb")
 # Mutations can yield during connection/conflict retries. This must be green
 # under eventlet so another waiting writer cannot block the lock holder's hub.
 # Native background callers enter through run_on_hub below.
-_historify_write_lock = threading.Lock()
+# Must be an RLock so functions holding the lock can invoke other serialized
+# operations (e.g. evict_lru_older_than calling delete_market_data) without self-deadlock.
+_historify_write_lock = threading.RLock()
 # Process-wide recursive lock to serialize DuckDB file access on Windows.
 # Prevents concurrent thread collisions (IO Error: Cannot open file ... used by another process)
 _historify_db_lock = threading.RLock()
@@ -3819,7 +3821,6 @@ def get_active_schedules() -> list[dict[str, Any]]:
         return []
 
 
-@_serialized_write
 def touch_lru(symbol: str, exchange: str) -> None:
     """Update last accessed timestamp for a symbol in LRU tracker."""
     try:

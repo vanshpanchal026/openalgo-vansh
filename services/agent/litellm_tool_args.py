@@ -37,7 +37,7 @@ that happens.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from utils.logging import get_logger
@@ -214,16 +214,64 @@ def _emit(
     return scope(chunk) if callable(scope) else chunk
 
 
+_SANITY_MARKER = "_openalgo_tool_schema_sanitized"
+_ALLOWED_FUNCTION_KEYS = frozenset({"name", "description", "parameters", "strict"})
+
+
+def sanitize_tool_definitions(tools: Iterable[Any]) -> list[Any]:
+    """Strip framework-specific metadata from function tool specifications.
+
+    OpenAI-compatible endpoints (and specifically strict validators like Mistral)
+    require function tool objects to strictly adhere to the standard schema:
+    `{"type": "function", "function": {"name", "description", "parameters", "strict"}}`.
+    Agno serializes its own runtime attributes (`requires_confirmation`,
+    `external_execution`, `approval_type`) into the function dictionary, which causes
+    Mistral and other strict Pydantic parsers to reject the API call with 400.
+    """
+    sanitized: list[Any] = []
+    for tool in tools:
+        if isinstance(tool, Mapping) and tool.get("type") == "function" and isinstance(tool.get("function"), Mapping):
+            fn = tool["function"]
+            clean_fn = {k: v for k, v in fn.items() if k in _ALLOWED_FUNCTION_KEYS}
+            sanitized.append({**tool, "function": clean_fn})
+        else:
+            sanitized.append(tool)
+    return sanitized
+
+
+def _install_tool_sanitizer() -> bool:
+    """Ensure tool dictionaries formatted by agno contain only standard keys."""
+    try:
+        from agno.models.litellm.chat import LiteLLM
+
+        original = getattr(LiteLLM, "_format_tools", None)
+        if original is None or getattr(original, _SANITY_MARKER, False):
+            return True
+
+        def _sanitized_format_tools(self: Any, tools: Any) -> list[dict[str, Any]]:
+            tool_dicts = original(self, tools)
+            return sanitize_tool_definitions(tool_dicts)
+
+        _sanitized_format_tools.__wrapped__ = original  # type: ignore[attr-defined]
+        setattr(_sanitized_format_tools, _SANITY_MARKER, True)
+        LiteLLM._format_tools = _sanitized_format_tools
+        return True
+    except Exception:
+        logger.exception("Could not install the tool schema sanitizer")
+        return False
+
+
 def install() -> bool:
-    """Patch LiteLLM's Responses-to-chat stream iterator. Idempotent.
+    """Patch LiteLLM's Responses-to-chat stream iterator and agno tool serialization. Idempotent.
 
     Returns:
-        True when the patch is in place after this call.
+        True when the patches are in place after this call.
     """
     global _installed
     with _install_lock:
         if _installed:
             return True
+        _install_tool_sanitizer()
         try:
             from litellm.completion_extras.litellm_responses_transformation import (
                 transformation,

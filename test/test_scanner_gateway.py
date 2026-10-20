@@ -525,3 +525,146 @@ def test_atomic_rollback_on_failure(client, monkeypatch):
     # Verify RELIANCE was rolled back and not added to the watchlist
     rollback_wl = [w for w in wl.get_watchlists(TEST_USER) if w["name"] == "Rollback Test"][0]
     assert len(rollback_wl["items"]) == 0
+
+
+def test_csrf_enforcement_on_session_auth(client, monkeypatch):
+    """Session-based POST requests must enforce anti-CSRF headers."""
+    import blueprints.scanner_gateway as gw
+
+    # Mock session validity
+    monkeypatch.setattr(gw, "is_session_valid", lambda: True)
+
+    with client.session_transaction() as sess:
+        sess["user"] = TEST_USER
+
+    payload = {
+        "watchlist_name": "CSRF Test",
+        "source": "ui_source",
+        "items": [{"symbol": "INFY", "exchange": "NSE"}],
+    }
+
+    # 1. Missing anti-CSRF header -> 403 Forbidden
+    resp_no_csrf = client.post("/api/v1/custom/watchlist/sync", json=payload)
+    assert resp_no_csrf.status_code == 403
+    assert "CSRF verification failed" in resp_no_csrf.get_json()["message"]
+
+    # 2. With X-Requested-With: XMLHttpRequest -> 200 OK
+    resp_ajax = client.post(
+        "/api/v1/custom/watchlist/sync",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        json=payload,
+    )
+    assert resp_ajax.status_code == 200
+
+    # 3. With X-CSRFToken -> 200 OK
+    resp_token = client.post(
+        "/api/v1/custom/watchlist/sync",
+        headers={"X-CSRFToken": "dummy_token"},
+        json=payload,
+    )
+    assert resp_token.status_code == 200
+
+
+def test_empty_replace_clears_only_source_symbols(client, monkeypatch):
+    """Action 'replace' with items=[] must clear only the caller source's symbols and preserve manual entries."""
+    import blueprints.scanner_gateway as gw
+
+    monkeypatch.setattr(gw, "get_username_by_apikey", lambda key: TEST_USER)
+
+    # 1. Sync INFY and TCS under source 'source_alpha'
+    init_payload = {
+        "watchlist_name": "Clear Test",
+        "source": "source_alpha",
+        "items": [
+            {"symbol": "INFY", "exchange": "NSE"},
+            {"symbol": "TCS", "exchange": "NSE"},
+        ],
+    }
+    resp1 = client.post(
+        "/api/v1/custom/watchlist/sync",
+        headers={"X-API-KEY": VALID_API_KEY},
+        json=init_payload,
+    )
+    assert resp1.status_code == 200
+    assert resp1.get_json()["summary"]["valid_added"] == 2
+
+    # 2. Add manual item RELIANCE
+    wl_obj = [w for w in wl.get_watchlists(TEST_USER) if w["name"] == "Clear Test"][0]
+    wl.add_item(TEST_USER, wl_obj["id"], "RELIANCE", "NSE")
+
+    # 3. Perform replace with empty list for 'source_alpha'
+    clear_payload = {
+        "watchlist_name": "Clear Test",
+        "source": "source_alpha",
+        "action": "replace",
+        "items": [],
+    }
+    resp2 = client.post(
+        "/api/v1/custom/watchlist/sync",
+        headers={"X-API-KEY": VALID_API_KEY},
+        json=clear_payload,
+    )
+    assert resp2.status_code == 200
+    summary = resp2.get_json()["summary"]
+    assert summary["source_replaced"] == 2  # INFY and TCS removed
+
+    # 4. Watchlist must still contain RELIANCE
+    updated_wl = [w for w in wl.get_watchlists(TEST_USER) if w["name"] == "Clear Test"][0]
+    symbols = [it["symbol"] for it in updated_wl["items"]]
+    assert "RELIANCE" in symbols
+    assert "INFY" not in symbols
+    assert "TCS" not in symbols
+
+
+def test_batch_capacity_limit_enforced(client, monkeypatch):
+    """Ingestion payloads exceeding MAX_ITEMS_PER_LIST (500) must be rejected with 400."""
+    import blueprints.scanner_gateway as gw
+
+    monkeypatch.setattr(gw, "get_username_by_apikey", lambda key: TEST_USER)
+
+    oversized_items = [{"symbol": f"SYM{i}", "exchange": "NSE"} for i in range(501)]
+    payload = {
+        "watchlist_name": "Cap Test",
+        "source": "batch_source",
+        "items": oversized_items,
+    }
+
+    resp = client.post(
+        "/api/v1/custom/watchlist/sync",
+        headers={"X-API-KEY": VALID_API_KEY},
+        json=payload,
+    )
+    assert resp.status_code == 400
+    assert "exceeds maximum allowed (500)" in resp.get_json()["message"]
+
+
+def test_vendor_delimiter_and_series_normalization(client, monkeypatch):
+    """Gateway must normalize vendor delimiters (NSE:INFY, RELIANCE.NS) and prioritize series."""
+    import blueprints.scanner_gateway as gw
+
+    monkeypatch.setattr(gw, "get_username_by_apikey", lambda key: TEST_USER)
+
+    payload = {
+        "watchlist_name": "Delimiter Test",
+        "source": "vendor_source",
+        "items": [
+            {"symbol": "NSE:INFY"},
+            {"symbol": "RELIANCE.NS"},
+            {"symbol": "PARASYNTEX.BO"},
+        ],
+    }
+
+    resp = client.post(
+        "/api/v1/custom/watchlist/sync",
+        headers={"X-API-KEY": VALID_API_KEY},
+        json=payload,
+    )
+    assert resp.status_code == 200
+    summary = resp.get_json()["summary"]
+    assert summary["valid_added"] == 3
+    valid_items = resp.get_json()["valid_items"]
+    res_syms = {v["resolved_symbol"]: v["exchange"] for v in valid_items}
+    assert res_syms.get("INFY") == "NSE"
+    assert res_syms.get("RELIANCE") == "NSE"
+    assert res_syms.get("PARASYNTEX") == "BSE"
+

@@ -75,12 +75,21 @@ def fetch_public_candles(
 
         upstox_iv, store_iv = _format_upstox_interval(interval)
 
-        # Calculate to_date and from_date
+        # Calculate to_date and from_date safely supporting date/datetime or str
         today = date.today()
-        to_str = end_date[:10] if end_date else today.strftime("%Y-%m-%d")
+        today_str = today.strftime("%Y-%m-%d")
 
-        if start_date:
-            from_str = start_date[:10]
+        if isinstance(end_date, (datetime, date)):
+            to_str = end_date.strftime("%Y-%m-%d")
+        elif isinstance(end_date, str) and end_date.strip():
+            to_str = end_date.strip()[:10]
+        else:
+            to_str = today_str
+
+        if isinstance(start_date, (datetime, date)):
+            from_str = start_date.strftime("%Y-%m-%d")
+        elif isinstance(start_date, str) and start_date.strip():
+            from_str = start_date.strip()[:10]
         else:
             # Query DuckDB watermark for incremental fetch
             with get_connection() as conn:
@@ -101,26 +110,26 @@ def fetch_public_candles(
         encoded_key = urllib.parse.quote(upstox_key, safe="")
         url = f"{UPSTOX_HIST_BASE}/{encoded_key}/{upstox_iv}/{to_str}/{from_str}"
 
-        client = httpx.Client(follow_redirects=True, timeout=15.0)
-        resp = client.get(url, headers={"Accept": "application/json"})
+        with httpx.Client(follow_redirects=True, timeout=15.0) as client:
+            resp = client.get(url, headers={"Accept": "application/json"})
 
-        if resp.status_code != 200:
-            return False, [], f"Public CDN returned HTTP {resp.status_code}: {resp.text[:120]}"
+            if resp.status_code != 200:
+                return False, [], f"Public CDN returned HTTP {resp.status_code}: {resp.text[:120]}"
 
-        body = resp.json()
-        raw_candles = body.get("data", {}).get("candles", [])
+            body = resp.json()
+            raw_candles = body.get("data", {}).get("candles", [])
 
-        # Also fetch today's intraday bars if interval is 1m and looking up current session
-        if store_iv == "1m" and to_str == today.strftime("%Y-%m-%d"):
-            try:
-                today_url = f"{UPSTOX_HIST_BASE}/intraday/{encoded_key}/{upstox_iv}"
-                today_resp = client.get(today_url, headers={"Accept": "application/json"})
-                if today_resp.status_code == 200:
-                    today_candles = today_resp.json().get("data", {}).get("candles", [])
-                    if today_candles:
-                        raw_candles = today_candles + raw_candles
-            except Exception as e:
-                logger.debug(f"[PublicCandleService] Could not backfill current day intraday: {e}")
+            # Also fetch today's intraday bars if interval is 1m and looking up current session
+            if store_iv == "1m" and to_str == today.strftime("%Y-%m-%d"):
+                try:
+                    today_url = f"{UPSTOX_HIST_BASE}/intraday/{encoded_key}/{upstox_iv}"
+                    today_resp = client.get(today_url, headers={"Accept": "application/json"})
+                    if today_resp.status_code == 200:
+                        today_candles = today_resp.json().get("data", {}).get("candles", [])
+                        if today_candles:
+                            raw_candles = today_candles + raw_candles
+                except Exception as e:
+                    logger.debug(f"[PublicCandleService] Could not backfill current day intraday: {e}")
 
         if not raw_candles:
             return True, [], None

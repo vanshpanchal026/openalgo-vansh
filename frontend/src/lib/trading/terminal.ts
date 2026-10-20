@@ -1654,15 +1654,27 @@ export class TradingTerminal {
     path: string,
     body: Record<string, unknown> = {}
   ): Promise<T> {
-    const res = await fetch(`/api/v1/${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apikey: this.apiKey, ...body }),
-    })
-    const j = (await res.json().catch(() => ({}))) as T & { status?: string; message?: string }
-    if (!res.ok || j.status === 'error')
-      throw new Error(j.message || `${path} failed (${res.status})`)
-    return j
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15_000)
+    try {
+      const res = await fetch(`/api/v1/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apikey: this.apiKey, ...body }),
+        signal: controller.signal,
+      })
+      const j = (await res.json().catch(() => ({}))) as T & { status?: string; message?: string }
+      if (!res.ok || j.status === 'error')
+        throw new Error(j.message || `${path} failed (${res.status})`)
+      return j
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error(`Request to ${path} timed out after 15s`)
+      }
+      throw err
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   async search(query: string, exchange?: string, limit = 30): Promise<SearchRow[]> {

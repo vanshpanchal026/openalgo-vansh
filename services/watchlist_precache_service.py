@@ -7,7 +7,6 @@ for all symbols in an imported or active watchlist.
 Eliminates broker rate limits and allows microsecond-speed chart flipping.
 """
 
-import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -16,13 +15,15 @@ from database.auth_db import get_api_key_for_tradingview, get_first_available_ap
 from database.historify_db import evict_lru_older_than, get_data_range, touch_lru
 from database.token_db import get_br_symbol
 from services.historify_service import download_data
+from utils import real_threading
+from utils.db_sessions import releases_scoped_sessions, remove_all_scoped_sessions
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 # Precache lock and status
-_precache_lock = threading.Lock()
-_precache_thread: threading.Thread | None = None
+_precache_lock = real_threading.Lock()
+_precache_thread: Any | None = None
 _status: dict[str, Any] = {
     "status": "idle",
     "total": 0,
@@ -40,6 +41,7 @@ def get_precache_status() -> dict[str, Any]:
         return dict(_status)
 
 
+@releases_scoped_sessions
 def _precache_worker(items: list[dict], user_id: str | None = None):
     """Background worker thread that fetches and caches daily candles safely."""
     global _status
@@ -140,12 +142,15 @@ def _precache_worker(items: list[dict], user_id: str | None = None):
 
             if success:
                 touch_lru(symbol, exchange)
+                with _precache_lock:
+                    _status["completed"] += 1
             else:
                 logger.warning(
                     f"[Watchlist Precache] Broker fallback failed for {symbol}:{exchange}: {resp.get('message', code)}"
                 )
                 with _precache_lock:
                     _status["errors"] += 1
+                    _status["completed"] += 1
 
             # Sleep only when hitting broker fallback
             time.sleep(0.35)
@@ -153,6 +158,7 @@ def _precache_worker(items: list[dict], user_id: str | None = None):
             logger.warning(f"[Watchlist Precache] Error precaching {symbol}:{exchange}: {e}")
             with _precache_lock:
                 _status["errors"] += 1
+                _status["completed"] += 1
 
     # Run 90-day LRU Eviction after precache finishes
     try:
@@ -161,6 +167,8 @@ def _precache_worker(items: list[dict], user_id: str | None = None):
             logger.info(f"[Watchlist Precache] LRU Cleanup: evicted {evicted} symbols older than 90 days.")
     except Exception as e:
         logger.warning(f"[Watchlist Precache] Error during LRU eviction: {e}")
+    finally:
+        remove_all_scoped_sessions()
 
     with _precache_lock:
         _status["status"] = "idle"
@@ -195,7 +203,7 @@ def trigger_watchlist_precache(items: list[dict], user_id: str | None = None) ->
             except Exception as e:
                 logger.debug(f"[Watchlist Precache] Bulk seed trigger skipped: {e}")
 
-        _precache_thread = threading.Thread(
+        _precache_thread = real_threading.Thread(
             target=_precache_worker,
             args=(items, user_id),
             name="WatchlistPrecacheWorker",

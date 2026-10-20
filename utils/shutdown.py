@@ -192,6 +192,13 @@ def _stop_squareoff_scheduler() -> None:
         module.stop_squareoff_scheduler(wait=False)
 
 
+def _stop_ipo_scheduler() -> None:
+    """Stop the Automated IPO Discovery scheduler."""
+    module = _imported("services.ipo_discovery_service")
+    if module is not None and hasattr(module, "shutdown_ipo_scheduler"):
+        module.shutdown_ipo_scheduler()
+
+
 def _stop_websocket_proxy() -> None:
     """Stop the in-process websocket proxy and join its thread.
 
@@ -443,6 +450,7 @@ def shutdown_runtime() -> None:
         _stop_chartink_scheduler,
         _stop_python_strategy_scheduler,
         _stop_squareoff_scheduler,
+        _stop_ipo_scheduler,
         _stop_strategy_module,
         _stop_websocket_proxy,
         _late_hooks,

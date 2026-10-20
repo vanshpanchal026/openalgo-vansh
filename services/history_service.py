@@ -55,6 +55,16 @@ def _enforce_rate_limit(*, background: bool = False):
         time.sleep(min(wait, 3.0))
 
 
+def _touch_lru_async(symbol: str, exchange: str) -> None:
+    """Update LRU timestamp asynchronously so chart responses are never blocked."""
+    try:
+        from database.historify_db import touch_lru
+
+        real_threading.Thread(target=touch_lru, args=(symbol, exchange), daemon=True).start()
+    except Exception:
+        pass
+
+
 def validate_symbol_exchange(symbol: str, exchange: str) -> tuple[bool, str | None]:
     """
     Validate that a symbol exists for the given exchange.
@@ -370,6 +380,24 @@ def get_history(
     # Resolve canonical symbol and adjust exchange if needed
     from database.token_db import get_symbol_info
     sym_info = get_symbol_info(symbol, exchange)
+    if not sym_info and exchange.upper() in ("NSE", "BSE"):
+        alt_exch = "BSE" if exchange.upper() == "NSE" else "NSE"
+        alt_info = get_symbol_info(symbol, alt_exch)
+        if alt_info:
+            sym_info = alt_info
+            exchange = alt_exch
+            symbol = alt_info.symbol
+        else:
+            # Check root symbol if stripped of suffix (-SM, -ST, -BE, etc.)
+            import re
+            root = re.sub(r"-(?:SM|ST|BE|BZ|EQ)$", "", symbol, flags=re.IGNORECASE)
+            if root != symbol:
+                root_info = get_symbol_info(root, exchange) or get_symbol_info(root, alt_exch)
+                if root_info:
+                    sym_info = root_info
+                    exchange = root_info.exchange
+                    symbol = root_info.symbol
+
     if exchange.upper() in ("NSE", "BSE", "MCX"):
         idx_info = get_symbol_info(symbol, f"{exchange.upper()}_INDEX")
         if idx_info and (not sym_info or sym_info.token in ("26000", "26009", "26013", "26017", "26037", "26074") or (idx_info.token and idx_info.token.startswith("999"))):
@@ -403,13 +431,22 @@ def get_history(
             end_date=end_date,
         )
         if db_success and db_resp.get("data"):
-            try:
-                from database.historify_db import touch_lru
-
-                touch_lru(symbol, exchange)
-            except Exception:
-                pass
+            _touch_lru_async(symbol, exchange)
             return True, db_resp, 200
+
+        # Also check alternate exchange in DuckDB
+        if exchange.upper() in ("NSE", "BSE"):
+            alt_exch = "BSE" if exchange.upper() == "NSE" else "NSE"
+            alt_db_success, alt_db_resp, _ = get_history_from_db(
+                symbol=symbol,
+                exchange=alt_exch,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if alt_db_success and alt_db_resp.get("data"):
+                _touch_lru_async(symbol, alt_exch)
+                return True, alt_db_resp, 200
 
     # 2. Keyless Public CDN check (Upstox public endpoint - zero auth required)
     try:
@@ -433,6 +470,17 @@ def get_history(
             )
             if db_success and db_resp.get("data"):
                 return True, db_resp, 200
+            if exchange.upper() in ("NSE", "BSE"):
+                alt_exch = "BSE" if exchange.upper() == "NSE" else "NSE"
+                alt_db_success, alt_db_resp, _ = get_history_from_db(
+                    symbol=symbol,
+                    exchange=alt_exch,
+                    interval=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if alt_db_success and alt_db_resp.get("data"):
+                    return True, alt_db_resp, 200
             # If storage interval, return raw formatted candles
             pub_candles = _merge_live_forming_bar(pub_candles, symbol, exchange, interval)
             return True, {"status": "success", "data": pub_candles}, 200
@@ -533,5 +581,23 @@ def get_history(
                 touch_lru(symbol, exchange)
         except Exception as e:
             logger.debug(f"Auto-cache error for {symbol}:{exchange}: {e}")
+
+    # Final safety fallback: If broker call failed or returned no data, check DuckDB
+    # across primary and alternate exchanges before giving up, so charts can still render
+    # from cached/historical data even when broker session is expired or broker is down.
+    if not success or not (isinstance(response_data, dict) and response_data.get("data")):
+        for ex in [exchange, ("BSE" if exchange.upper() == "NSE" else "NSE")]:
+            db_ok, db_fallback, _ = get_history_from_db(
+                symbol=symbol,
+                exchange=ex,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if db_ok and db_fallback.get("data"):
+                logger.info(
+                    f"[HistoryService] Broker call failed/expired; serving {len(db_fallback['data'])} cached bars from DuckDB for {ex}:{symbol}"
+                )
+                return True, db_fallback, 200
 
     return success, response_data, status_code

@@ -36,6 +36,34 @@ def get_symbol_info_with_auth(
             .first()
         )
 
+        # Fallback to alternate exchange (NSE <-> BSE) for cash equities
+        if result is None and exchange.upper() in ("NSE", "BSE"):
+            alt_exch = "BSE" if exchange.upper() == "NSE" else "NSE"
+            result = (
+                db_session.query(SymToken)
+                .filter(SymToken.symbol == symbol, SymToken.exchange == alt_exch)
+                .first()
+            )
+            # Try stripped suffix (-SM, -ST, -BE, etc.)
+            if result is None:
+                import re
+                root = re.sub(r"-(?:SM|ST|BE|BZ|EQ)$", "", symbol, flags=re.IGNORECASE)
+                if root != symbol:
+                    result = (
+                        db_session.query(SymToken)
+                        .filter(SymToken.symbol == root, SymToken.exchange.in_([exchange, alt_exch]))
+                        .first()
+                    )
+
+        # Fallback to index exchange (e.g. NIFTY requested with NSE)
+        if result is None and exchange.upper() in ("NSE", "BSE", "MCX"):
+            idx_exch = f"{exchange.upper()}_INDEX"
+            result = (
+                db_session.query(SymToken)
+                .filter(SymToken.symbol == symbol, SymToken.exchange == idx_exch)
+                .first()
+            )
+
         if result is None:
             error_response = {
                 "status": "error",

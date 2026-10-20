@@ -430,6 +430,15 @@ def add_item(user_id: str, watchlist_id: int, symbol: str, exchange: str) -> dic
         )
         db_session.add(item)
         db_session.commit()
+
+        # Record manual provenance so external scanner replace operations do not delete user-added items
+        try:
+            from database.scanner_meta_db import upsert_provenance
+            upsert_provenance(user_id, watchlist.name, symbol, exchange, source="manual", is_active=True)
+            db_session.commit()
+        except Exception as prov_err:
+            logger.debug("Manual provenance record skipped: %s", prov_err)
+
         return {
             "id": item.id,
             "symbol": item.symbol,
