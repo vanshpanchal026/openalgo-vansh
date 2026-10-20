@@ -119,7 +119,6 @@ import {
   type PriceAxisCommand,
   PriceAxisController,
   type PriceAxisMenu,
-  pinOnceMeasured,
   priceAxisPatch,
   priceAxisSettingsView,
   priceAxisShortcuts,
