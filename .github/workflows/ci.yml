@@ -51,6 +51,7 @@ jobs:
         run: |
           uv run pytest test/test_log_location.py test/test_navigation_update.py \
             test/test_history_service_source_validation.py \
+            test/test_historify_custom_timeframes.py \
             test/test_gthread_historify_writes.py \
             test/test_gthread_hosts_historify_jobs.py \
             test/test_python_editor.py test/test_rate_limits_simple.py \
@@ -66,10 +67,13 @@ jobs:
             test/test_precompress_assets.py \
             test/test_broker_credential_logging.py \
             test/test_option_symbol_service_validation.py \
+            test/test_fyers_hsm_price_precision.py \
             test/test_graceful_shutdown.py \
             test/test_flattrade_data_silence_watchdog.py \
             test/test_requirements_parity.py \
             test/test_fyers_index_hsm_mapping.py \
+            test/test_qty_freeze_unknown_default.py \
+            test/test_migrate_qty_freeze_oct_2026.py \
             -v --timeout=60
 
   # The web server launcher, booted for real. install/openalgo-gunicorn.sh is
@@ -320,6 +324,8 @@ jobs:
         run: node .claude/skills/chart-indicator/coverage.mjs
       - name: drawing menu metadata matches the pinned package
         run: node frontend/scripts/generate-drawing-tools.mjs --check
+      - name: toolbar and rail glyphs match the pinned package
+        run: node frontend/scripts/generate-chrome-icons.mjs --check
 
   # The openscript skill documents the openalgo-script compiler that /trading
   # actually pins, and the same reasoning applies: a version bump that leaves the
